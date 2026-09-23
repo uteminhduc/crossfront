@@ -251,7 +251,7 @@ bool CrossPointSettings::fromJson(JsonVariantConst doc) {
   if (doc["cfServerUrl"].is<const char*>()) {
     copyToField(cfServerUrl, doc["cfServerUrl"].as<const char*>(), sizeof(cfServerUrl));
   }
-  if (cfServerUrl[0] == '\0' || strstr(cfServerUrl, "192.168.1.3") != nullptr) {
+  if (cfServerUrl[0] == '\0') {
     strncpy(cfServerUrl, "https://cf-api.pocketgo.org", sizeof(cfServerUrl));
     needsResave = true;
   }
@@ -259,7 +259,7 @@ bool CrossPointSettings::fromJson(JsonVariantConst doc) {
   if (doc["cfWebUrl"].is<const char*>()) {
     copyToField(cfWebUrl, doc["cfWebUrl"].as<const char*>(), sizeof(cfWebUrl));
   }
-  if (cfWebUrl[0] == '\0' || strstr(cfWebUrl, "192.168.1.3") != nullptr) {
+  if (cfWebUrl[0] == '\0') {
     strncpy(cfWebUrl, "https://cf.pocketgo.org", sizeof(cfWebUrl));
     needsResave = true;
   }

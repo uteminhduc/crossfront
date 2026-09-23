@@ -2,31 +2,37 @@
 
 #include <string>
 
-#include "activities/Activity.h"
+#include "CrossPointSettings.h"
+#include "activities/UiListActivity.h"
 
-class CrossFrontSetupActivity final : public Activity {
+class CrossFrontSetupActivity final : public UiListActivity {
  public:
-  enum class MenuSelection : uint8_t {
-    SYNC_NOW = 0,
-    INTERVAL = 1,
-    COUNT = 2
-  };
+  static constexpr int TOTAL_ITEMS = 13;  // 0 = Sync now, 1..12 = 12 update interval options
 
   explicit CrossFrontSetupActivity(GfxRenderer& renderer, MappedInputManager& mappedInput);
 
   void onEnter() override;
   void onExit() override;
-  void loop() override;
-  void render(RenderLock&&) override;
+
+ protected:
+  int listCount() const override { return TOTAL_ITEMS; }
+  void buildScreen(UiScreen& screen) override;
+  void activateIndex(int index) override;
+  const char* headerTitle() const override;
+  void drawChrome() override;
 
  private:
   void ensureTokenGenerated();
   std::string getPairingUrl() const;
   void performManualSync();
-  const char* getIntervalLabel() const;
+  const char* getIntervalLabel(uint8_t interval) const;
+  std::string getFriendlyModelName() const;
+  int computeQrSectionHeight() const;
 
   char deviceId[32] = {0};
-  std::string statusMessage;
-  bool isSyncing = false;
-  MenuSelection selectedMenu = MenuSelection::SYNC_NOW;
+  enum class SyncStatus : uint8_t { IDLE, SYNCING, SUCCESS, FAILED };
+  SyncStatus syncStatus = SyncStatus::IDLE;
+
+  freeink::ui::ListItem rowItems[TOTAL_ITEMS]{};
+  std::string rowValues[TOTAL_ITEMS]{};
 };

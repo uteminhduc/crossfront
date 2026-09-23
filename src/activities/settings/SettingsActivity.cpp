@@ -472,6 +472,24 @@ void SettingsActivity::openSleepTimeoutPicker() {
 }
 
 std::string SettingsActivity::settingValueText(const SettingInfo& setting) {
+  if (setting.action == SettingAction::CrossFrontSetup) {
+    switch (SETTINGS.cfUpdateInterval) {
+      case CrossPointSettings::CF_1_MIN: return tr(STR_CROSSFRONT_1_MIN);
+      case CrossPointSettings::CF_2_MIN: return tr(STR_CROSSFRONT_2_MIN);
+      case CrossPointSettings::CF_5_MIN: return tr(STR_CROSSFRONT_5_MIN);
+      case CrossPointSettings::CF_15_MIN: return tr(STR_CROSSFRONT_15_MIN);
+      case CrossPointSettings::CF_30_MIN: return tr(STR_CROSSFRONT_30_MIN);
+      case CrossPointSettings::CF_1_HOUR: return tr(STR_CROSSFRONT_1_HOUR);
+      case CrossPointSettings::CF_2_HOURS: return tr(STR_CROSSFRONT_2_HOURS);
+      case CrossPointSettings::CF_3_HOURS: return tr(STR_CROSSFRONT_3_HOURS);
+      case CrossPointSettings::CF_6_HOURS: return tr(STR_CROSSFRONT_6_HOURS);
+      case CrossPointSettings::CF_12_HOURS: return tr(STR_CROSSFRONT_12_HOURS);
+      case CrossPointSettings::CF_1_DAY: return tr(STR_CROSSFRONT_24_HOURS);
+      case CrossPointSettings::CF_ON_SLEEP:
+      default:
+        return tr(STR_CROSSFRONT_ON_SLEEP);
+    }
+  }
   if (setting.type == SettingType::TOGGLE && setting.valuePtr != nullptr) {
     return SETTINGS.*(setting.valuePtr) ? tr(STR_STATE_ON) : tr(STR_STATE_OFF);
   }

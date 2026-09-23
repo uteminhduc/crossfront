@@ -88,7 +88,6 @@ bool CrossFrontService::fetchSleepImageConditional(unsigned long maxBudgetMs) {
   const unsigned long totalStart = millis();
   const std::string savedEtag = getSavedEtag();
 
-  // 1. Kết nối Wi-Fi nhanh tối đa 2.5s
   if (!connectWifiQuick(2500)) {
     LOG_DBG("CF", "Wi-Fi not connected within 2.5s budget, skipping remote fetch");
     disconnectWifi();
@@ -100,14 +99,13 @@ bool CrossFrontService::fetchSleepImageConditional(unsigned long maxBudgetMs) {
   const char* token = SETTINGS.cfDeviceToken[0] != '\0' ? SETTINGS.cfDeviceToken : deviceId;
 
   std::string server = std::string(serverUrl);
-  if (server.find("192.168.1.3") != std::string::npos) {
+  if (server.empty()) {
     server = "https://cf-api.pocketgo.org";
   }
   if (!server.empty() && server.back() == '/') {
     server.pop_back();
   }
 
-  // 2. Tính thời gian còn lại cho HTTP request
   const unsigned long elapsed = millis() - totalStart;
   int httpTimeout = (elapsed < maxBudgetMs) ? static_cast<int>(maxBudgetMs - elapsed) : 0;
   if (httpTimeout > 2200) httpTimeout = 2200;
@@ -140,10 +138,8 @@ bool CrossFrontService::handleTimerWakeup(HalDisplay& display, GfxRenderer& rend
     return false;
   }
 
-  // Thực hiện conditional fetch với timeout <= 4.8s
   const bool hasNewImage = fetchSleepImageConditional(MAX_BUDGET_MS);
 
-  // Chỉ đánh thức màn hình và vẽ lại nếu thực sự có ảnh mới tải về!
   if (hasNewImage) {
     HalFile file;
     if (Storage.openFileForRead("CF", SLEEP_BMP_PATH, file)) {
@@ -161,17 +157,14 @@ bool CrossFrontService::handleTimerWakeup(HalDisplay& display, GfxRenderer& rend
     LOG_INF("CF", "No new image, skipped e-ink redraw to conserve battery");
   }
 
-  // Cài đặt hẹn giờ cho lần thức giấc kế tiếp
   armSleepTimer();
   Storage.prepareForDeepSleep();
   return true;
 }
 
 bool CrossFrontService::renderSleepScreen(const GfxRenderer& renderer) {
-  // Luôn thực hiện fetch khi vào Sleep (với hard timeout <= 4.8s)
   fetchSleepImageConditional(MAX_BUDGET_MS);
 
-  // Mở file ảnh (mới tải về hoặc ảnh cũ đã lưu từ trước)
   HalFile file;
   if (Storage.openFileForRead("CF", SLEEP_BMP_PATH, file)) {
     Bitmap bitmap(file);
@@ -197,3 +190,86 @@ void CrossFrontService::armSleepTimer() {
     }
   }
 }
+
+CrossFrontService::SyncResult CrossFrontService::syncNow() {
+  auto& store = WifiCredentialStore::getInstance();
+  store.loadFromFile();
+
+  if (!connectWifiQuick(5000)) {
+    LOG_ERR("CF", "syncNow: Failed to connect Wi-Fi within 5s");
+    disconnectWifi();
+    return SyncResult::WIFI_CONNECT_FAILED;
+  }
+
+  const char* serverUrl = SETTINGS.cfServerUrl;
+  std::string server = (serverUrl[0] != '\0') ? std::string(serverUrl) : "https://cf-api.pocketgo.org";
+  if (!server.empty() && server.back() == '/') {
+    server.pop_back();
+  }
+
+  char deviceId[32] = {0};
+  SETTINGS.getCfDeviceId(deviceId, sizeof(deviceId));
+  const char* token = (SETTINGS.cfDeviceToken[0] != '\0') ? SETTINGS.cfDeviceToken : deviceId;
+
+  // 1. Fetch config and update Wi-Fi credentials from web studio
+  std::string configUrl = server + "/api/cf/device/" + token + "/config";
+  std::string jsonBody;
+  bool configOk = false;
+  if (HttpDownloader::fetchUrl(configUrl, jsonBody, "", "", 4000)) {
+    JsonDocument doc;
+    if (deserializeJson(doc, jsonBody) == DeserializationError::Ok) {
+      configOk = true;
+      if (doc["wifi_list"].is<JsonArray>()) {
+        bool added = false;
+        for (JsonObject net : doc["wifi_list"].as<JsonArray>()) {
+          const char* ssid = net["ssid"];
+          const char* pass = net["password"] | "";
+          if (ssid && strlen(ssid) > 0) {
+            store.addCredential(ssid, pass);
+            added = true;
+          }
+        }
+        if (added) {
+          store.saveToFile();
+          LOG_INF("CF", "Wi-Fi list updated from CrossFront Web App");
+        }
+      }
+
+      if (doc["interval"].is<const char*>()) {
+        const char* intervalStr = doc["interval"].as<const char*>();
+        if (strcmp(intervalStr, "on_sleep") == 0) SETTINGS.cfUpdateInterval = CrossPointSettings::CF_ON_SLEEP;
+        else if (strcmp(intervalStr, "1m") == 0) SETTINGS.cfUpdateInterval = CrossPointSettings::CF_1_MIN;
+        else if (strcmp(intervalStr, "2m") == 0) SETTINGS.cfUpdateInterval = CrossPointSettings::CF_2_MIN;
+        else if (strcmp(intervalStr, "5m") == 0) SETTINGS.cfUpdateInterval = CrossPointSettings::CF_5_MIN;
+        else if (strcmp(intervalStr, "15m") == 0) SETTINGS.cfUpdateInterval = CrossPointSettings::CF_15_MIN;
+        else if (strcmp(intervalStr, "30m") == 0) SETTINGS.cfUpdateInterval = CrossPointSettings::CF_30_MIN;
+        else if (strcmp(intervalStr, "1h") == 0) SETTINGS.cfUpdateInterval = CrossPointSettings::CF_1_HOUR;
+        else if (strcmp(intervalStr, "2h") == 0) SETTINGS.cfUpdateInterval = CrossPointSettings::CF_2_HOURS;
+        else if (strcmp(intervalStr, "3h") == 0) SETTINGS.cfUpdateInterval = CrossPointSettings::CF_3_HOURS;
+        else if (strcmp(intervalStr, "6h") == 0) SETTINGS.cfUpdateInterval = CrossPointSettings::CF_6_HOURS;
+        else if (strcmp(intervalStr, "12h") == 0) SETTINGS.cfUpdateInterval = CrossPointSettings::CF_12_HOURS;
+        else if (strcmp(intervalStr, "1d") == 0) SETTINGS.cfUpdateInterval = CrossPointSettings::CF_1_DAY;
+        SETTINGS.saveToFile();
+      }
+    }
+  }
+
+  // 2. Download latest sleep image
+  std::string imageUrl = server + "/api/cf/device/" + token + "/sleep.bmp";
+  const auto err = HttpDownloader::downloadToFile(imageUrl, SLEEP_BMP_PATH, nullptr, nullptr, "", "", false, 5000);
+
+  disconnectWifi();
+
+  if (err == HttpDownloader::DownloadError::OK || err == HttpDownloader::DownloadError::NOT_MODIFIED) {
+    SETTINGS.sleepScreen = CrossPointSettings::SLEEP_SCREEN_MODE::CROSSFRONT;
+    SETTINGS.saveToFile();
+    LOG_INF("CF", "syncNow: Synchronized image and config successfully");
+    return SyncResult::OK;
+  }
+
+  if (!configOk) {
+    return SyncResult::CONFIG_FETCH_FAILED;
+  }
+  return SyncResult::IMAGE_FETCH_FAILED;
+}
+
