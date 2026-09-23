@@ -57,5 +57,5 @@ class HttpDownloader {
                                       ProgressCallback progress = nullptr, bool* cancelFlag = nullptr,
                                       const std::string& username = "", const std::string& password = "",
                                       bool downgradeRedirectsToHttp = false, int timeoutMs = 60000,
-                                      const std::string& ifNoneMatch = "");
+                                      const std::string& ifNoneMatch = "", std::string* responseEtag = nullptr);
 };

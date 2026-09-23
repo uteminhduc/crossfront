@@ -32,6 +32,7 @@
 #include "components/UITheme.h"
 #include "components/UIThemeTokens.h"
 #include "components/UiAppHelpers.h"
+#include "crossfront/CrossFrontSettings.h"
 #include "fontIds.h"
 
 namespace fui = freeink::ui;
@@ -473,19 +474,19 @@ void SettingsActivity::openSleepTimeoutPicker() {
 
 std::string SettingsActivity::settingValueText(const SettingInfo& setting) {
   if (setting.action == SettingAction::CrossFrontSetup) {
-    switch (SETTINGS.cfUpdateInterval) {
-      case CrossPointSettings::CF_1_MIN: return tr(STR_CROSSFRONT_1_MIN);
-      case CrossPointSettings::CF_2_MIN: return tr(STR_CROSSFRONT_2_MIN);
-      case CrossPointSettings::CF_5_MIN: return tr(STR_CROSSFRONT_5_MIN);
-      case CrossPointSettings::CF_15_MIN: return tr(STR_CROSSFRONT_15_MIN);
-      case CrossPointSettings::CF_30_MIN: return tr(STR_CROSSFRONT_30_MIN);
-      case CrossPointSettings::CF_1_HOUR: return tr(STR_CROSSFRONT_1_HOUR);
-      case CrossPointSettings::CF_2_HOURS: return tr(STR_CROSSFRONT_2_HOURS);
-      case CrossPointSettings::CF_3_HOURS: return tr(STR_CROSSFRONT_3_HOURS);
-      case CrossPointSettings::CF_6_HOURS: return tr(STR_CROSSFRONT_6_HOURS);
-      case CrossPointSettings::CF_12_HOURS: return tr(STR_CROSSFRONT_12_HOURS);
-      case CrossPointSettings::CF_1_DAY: return tr(STR_CROSSFRONT_24_HOURS);
-      case CrossPointSettings::CF_ON_SLEEP:
+    switch (CROSSFRONT_SETTINGS.updateInterval) {
+      case CrossFrontSettings::ONE_MINUTE: return tr(STR_CROSSFRONT_1_MIN);
+      case CrossFrontSettings::TWO_MINUTES: return tr(STR_CROSSFRONT_2_MIN);
+      case CrossFrontSettings::FIVE_MINUTES: return tr(STR_CROSSFRONT_5_MIN);
+      case CrossFrontSettings::FIFTEEN_MINUTES: return tr(STR_CROSSFRONT_15_MIN);
+      case CrossFrontSettings::THIRTY_MINUTES: return tr(STR_CROSSFRONT_30_MIN);
+      case CrossFrontSettings::ONE_HOUR: return tr(STR_CROSSFRONT_1_HOUR);
+      case CrossFrontSettings::TWO_HOURS: return tr(STR_CROSSFRONT_2_HOURS);
+      case CrossFrontSettings::THREE_HOURS: return tr(STR_CROSSFRONT_3_HOURS);
+      case CrossFrontSettings::SIX_HOURS: return tr(STR_CROSSFRONT_6_HOURS);
+      case CrossFrontSettings::TWELVE_HOURS: return tr(STR_CROSSFRONT_12_HOURS);
+      case CrossFrontSettings::ONE_DAY: return tr(STR_CROSSFRONT_24_HOURS);
+      case CrossFrontSettings::ON_SLEEP:
       default:
         return tr(STR_CROSSFRONT_ON_SLEEP);
     }

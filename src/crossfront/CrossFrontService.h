@@ -9,7 +9,7 @@ class CrossFrontService {
  public:
   static constexpr char SLEEP_BMP_PATH[] = "/.crosspoint/cf_sleep.bmp";
   static constexpr char ETAG_FILE_PATH[] = "/.crosspoint/cf_sleep.etag";
-  static constexpr unsigned long MAX_BUDGET_MS = 4800;
+  static constexpr unsigned long DEFAULT_SLEEP_NETWORK_TIMEOUT_MS = 10000;
 
   static std::string getSavedEtag();
   static void saveEtag(const std::string& etag);
@@ -18,7 +18,7 @@ class CrossFrontService {
   static void disconnectWifi();
 
   // Conditional fetch using ETag (HTTP 304). Returns true if new image downloaded.
-  static bool fetchSleepImageConditional(unsigned long maxBudgetMs = MAX_BUDGET_MS);
+  static bool fetchSleepImageConditional(unsigned long maxBudgetMs = DEFAULT_SLEEP_NETWORK_TIMEOUT_MS);
 
   // Handles RTC timer wakeup event. Returns true if handled.
   static bool handleTimerWakeup(HalDisplay& display, GfxRenderer& renderer);
@@ -37,6 +37,6 @@ class CrossFrontService {
   // Immediate sync: connects Wi-Fi, fetches config/wifi_list & image, saves settings.
   static SyncResult syncNow();
 
-  // Configures RTC timer wakeup based on cfUpdateInterval.
+  // Configures RTC timer wakeup based on CrossFront's update interval.
   static void armSleepTimer();
 };

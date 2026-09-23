@@ -25,21 +25,6 @@ class CrossPointSettings : public PersistableStore<CrossPointSettings> {
     CROSSFRONT = 8,
     SLEEP_SCREEN_MODE_COUNT
   };
-  enum CROSSFRONT_INTERVAL {
-    CF_ON_SLEEP = 0,
-    CF_1_MIN = 1,
-    CF_2_MIN = 2,
-    CF_5_MIN = 3,
-    CF_15_MIN = 4,
-    CF_30_MIN = 5,
-    CF_1_HOUR = 6,
-    CF_2_HOURS = 7,
-    CF_3_HOURS = 8,
-    CF_6_HOURS = 9,
-    CF_12_HOURS = 10,
-    CF_1_DAY = 11,
-    CF_INTERVAL_COUNT
-  };
   enum SLEEP_SCREEN_COVER_MODE { FIT = 0, CROP = 1, SLEEP_SCREEN_COVER_MODE_COUNT };
   enum SLEEP_SCREEN_COVER_FILTER {
     NO_FILTER = 0,
@@ -307,12 +292,6 @@ class CrossPointSettings : public PersistableStore<CrossPointSettings> {
   char sdFontFamilyName[32] = "";
   // Dictionary folder name under /dictionaries (empty = no dictionary)
   char dictionaryName[32] = "";
-  // CrossFront settings
-  char cfServerUrl[128] = "https://cf-api.pocketgo.org";
-  char cfWebUrl[128] = "https://cf.pocketgo.org";
-  char cfDeviceToken[32] = "";
-  uint8_t cfUpdateInterval = CF_ON_SLEEP;
-  uint8_t cfFetchOnSleep = 1;
   // Show hidden files/directories (starting with '.') in the file browser (0 = hidden, 1 = show)
   uint8_t showHiddenFiles = 0;
   // Show the title and author read from inside each book rather than its
@@ -425,8 +404,6 @@ class CrossPointSettings : public PersistableStore<CrossPointSettings> {
   unsigned long getSleepTimeoutMs() const;
   int getRefreshFrequency() const;
 
-  uint32_t getCfIntervalSeconds() const;
-  void getCfDeviceId(char* outId, size_t maxLen) const;
 };
 
 // Helper macro to access settings

@@ -66,7 +66,8 @@ struct WifiPowerSaveGuard {
 #if defined(FREEINK_NET_WOLFSSL)
 HttpDownloader::DownloadError runGetWolf(const std::string& startUrl, const std::string& username,
                                          const std::string& password, Sink& sink, bool downgradeRedirectsToHttp,
-                                         int timeoutMs = HTTP_TIMEOUT_MS, const std::string& ifNoneMatch = "") {
+                                         int timeoutMs = HTTP_TIMEOUT_MS, const std::string& ifNoneMatch = "",
+                                         std::string* responseEtag = nullptr) {
   WifiPowerSaveGuard psGuard;
   std::string url = startUrl;
 
@@ -135,6 +136,7 @@ HttpDownloader::DownloadError runGetWolf(const std::string& startUrl, const std:
       LOG_ERR("HTTP", "wolfSSL incomplete: got %zu of %zu bytes", sink.downloaded, sink.total);
       return HttpDownloader::HTTP_ERROR;
     }
+    if (responseEtag) *responseEtag = http.getHeader("etag");
     return HttpDownloader::OK;
   }
   LOG_ERR("HTTP", "too many redirects");
@@ -150,7 +152,7 @@ HttpDownloader::DownloadError runGetWolf(const std::string& startUrl, const std:
 // large/slow files and surfaces a short read directly.
 HttpDownloader::DownloadError runGet(const std::string& url, const std::string& username, const std::string& password,
                                      Sink& sink, int timeoutMs = HTTP_TIMEOUT_MS,
-                                     const std::string& ifNoneMatch = "") {
+                                     const std::string& ifNoneMatch = "", std::string* responseEtag = nullptr) {
   WifiPowerSaveGuard psGuard;
   esp_http_client_config_t config = {};
   config.url = url.c_str();
@@ -219,6 +221,11 @@ HttpDownloader::DownloadError runGet(const std::string& url, const std::string& 
     return HttpDownloader::HTTP_ERROR;
   }
 
+  char* etagHeader = nullptr;
+  if (responseEtag && esp_http_client_get_header(client, "ETag", &etagHeader) == ESP_OK && etagHeader) {
+    *responseEtag = etagHeader;
+  }
+
   // fetch_headers returns 0 for a chunked response (no Content-Length); leave
   // total at 0 so progress stays silent and the size check is skipped.
   sink.total = contentLength > 0 ? static_cast<size_t>(contentLength) : 0;
@@ -268,14 +275,14 @@ HttpDownloader::DownloadError runGetSecure(const std::string& url, const std::st
                                            const std::string& password, Sink& sink,
                                            bool downgradeRedirectsToHttp = false,
                                            int timeoutMs = HTTP_TIMEOUT_MS,
-                                           const std::string& ifNoneMatch = "") {
+                                           const std::string& ifNoneMatch = "", std::string* responseEtag = nullptr) {
 #if defined(FREEINK_NET_WOLFSSL)
-  return runGetWolf(url, username, password, sink, downgradeRedirectsToHttp, timeoutMs, ifNoneMatch);
+  return runGetWolf(url, username, password, sink, downgradeRedirectsToHttp, timeoutMs, ifNoneMatch, responseEtag);
 #else
   // esp_http_client follows redirects internally; the downgrade only exists on
   // the wolfSSL path, where the manual hop loop exposes the Location URL.
   (void)downgradeRedirectsToHttp;
-  return runGet(url, username, password, sink, timeoutMs, ifNoneMatch);
+  return runGet(url, username, password, sink, timeoutMs, ifNoneMatch, responseEtag);
 #endif
 }
 }  // namespace
@@ -312,7 +319,7 @@ HttpDownloader::DownloadError HttpDownloader::downloadToFile(const std::string& 
                                                              ProgressCallback progress, bool* cancelFlag,
                                                              const std::string& username, const std::string& password,
                                                              bool downgradeRedirectsToHttp, int timeoutMs,
-                                                             const std::string& ifNoneMatch) {
+                                                             const std::string& ifNoneMatch, std::string* responseEtag) {
   LOG_DBG("HTTP", "Downloading: %s -> %s", url.c_str(), destPath.c_str());
 
   const std::string tempPath = destPath + ".tmp";
@@ -330,7 +337,9 @@ HttpDownloader::DownloadError HttpDownloader::downloadToFile(const std::string& 
   sink.cancelFlag = cancelFlag;
   sink.write = [&file](const uint8_t* data, size_t len) { return file.write(data, len) == len; };
 
-  const DownloadError result = runGetSecure(url, username, password, sink, downgradeRedirectsToHttp, timeoutMs, ifNoneMatch);
+  std::string downloadedEtag;
+  const DownloadError result =
+      runGetSecure(url, username, password, sink, downgradeRedirectsToHttp, timeoutMs, ifNoneMatch, &downloadedEtag);
   file.close();
 
   if (result == NOT_MODIFIED) {
@@ -358,5 +367,6 @@ HttpDownloader::DownloadError HttpDownloader::downloadToFile(const std::string& 
   }
 
   LOG_DBG("HTTP", "Downloaded %zu bytes to %s", sink.downloaded, destPath.c_str());
+  if (responseEtag) *responseEtag = downloadedEtag;
   return OK;
 }
