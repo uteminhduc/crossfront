@@ -65,13 +65,14 @@ struct WifiPowerSaveGuard {
 
 #if defined(FREEINK_NET_WOLFSSL)
 HttpDownloader::DownloadError runGetWolf(const std::string& startUrl, const std::string& username,
-                                         const std::string& password, Sink& sink, bool downgradeRedirectsToHttp) {
+                                         const std::string& password, Sink& sink, bool downgradeRedirectsToHttp,
+                                         int timeoutMs = HTTP_TIMEOUT_MS, const std::string& ifNoneMatch = "") {
   WifiPowerSaveGuard psGuard;
   std::string url = startUrl;
 
   for (int hop = 0; hop <= MAX_REDIRECTS; ++hop) {
     freeink::SecureHttpClient http;
-    http.setTimeout(HTTP_TIMEOUT_MS);
+    http.setTimeout(timeoutMs);
     http.setInsecure();
     if (!http.begin(url)) {
       LOG_ERR("HTTP", "wolfSSL bad URL: %s", url.c_str());
@@ -85,6 +86,9 @@ HttpDownloader::DownloadError runGetWolf(const std::string& startUrl, const std:
       const std::string credentials = username + ":" + password;
       const String encoded = base64::encode(credentials.c_str());
       http.addHeader("Authorization", std::string("Basic ") + encoded.c_str());
+    }
+    if (!ifNoneMatch.empty()) {
+      http.addHeader("If-None-Match", ifNoneMatch.c_str());
     }
 
     LOG_DBG("HTTP", "wolfSSL GET: %s", url.c_str());
@@ -104,6 +108,10 @@ HttpDownloader::DownloadError runGetWolf(const std::string& startUrl, const std:
       LOG_ERR("HTTP", "wolfSSL request failed: %s", url.c_str());
       return HttpDownloader::HTTP_ERROR;
     }
+    if (status == 304) {
+      LOG_INF("HTTP", "wolfSSL 304 Not Modified");
+      return HttpDownloader::NOT_MODIFIED;
+    }
     if (isRedirect(status)) {
       const std::string location = http.getHeader("location");
       if (location.empty() || !freeink::SecureHttpClient::resolveUrl(url, location, url)) {
@@ -113,9 +121,8 @@ HttpDownloader::DownloadError runGetWolf(const std::string& startUrl, const std:
       if (downgradeRedirectsToHttp && url.rfind("https://", 0) == 0) {
         // Fetch the redirect target over plain HTTP. GitHub's release-asset
         // CDN serves its signed URLs on both schemes, and skipping the second
-        // TLS session removes its ~17KB record buffer — the MEMORY_E /
-        // OOM-abort site on C3 heaps that sit near 45KB free.
-        url.replace(0, 8, "http://");
+        // TLS handshake saves ~17KB of heap (the wolfSSL OOM site on C3).
+        url.replace(0, 5, "http");
       }
       continue;
     }
@@ -142,13 +149,14 @@ HttpDownloader::DownloadError runGetWolf(const std::string& startUrl, const std:
 // that ends early as ESP_ERR_HTTP_INCOMPLETE_DATA, whereas the read loop streams
 // large/slow files and surfaces a short read directly.
 HttpDownloader::DownloadError runGet(const std::string& url, const std::string& username, const std::string& password,
-                                     Sink& sink) {
+                                     Sink& sink, int timeoutMs = HTTP_TIMEOUT_MS,
+                                     const std::string& ifNoneMatch = "") {
   WifiPowerSaveGuard psGuard;
   esp_http_client_config_t config = {};
   config.url = url.c_str();
   config.buffer_size = HTTP_RX_BUF;
   config.buffer_size_tx = HTTP_TX_BUF;
-  config.timeout_ms = HTTP_TIMEOUT_MS;
+  config.timeout_ms = timeoutMs;
   // Verify HTTPS against the bundled CA roots. This build has esp-tls
   // CONFIG_ESP_TLS_INSECURE off, so an unverified TLS handshake can't be set
   // up at all; the model is public servers over verified https and local
@@ -170,6 +178,9 @@ HttpDownloader::DownloadError runGet(const std::string& url, const std::string& 
     const std::string credentials = username + ":" + password;
     const String header = "Basic " + base64::encode(credentials.c_str());
     esp_http_client_set_header(client, "Authorization", header.c_str());
+  }
+  if (!ifNoneMatch.empty()) {
+    esp_http_client_set_header(client, "If-None-Match", ifNoneMatch.c_str());
   }
 
   // open()/read() does not auto-follow redirects (only perform() does), so step
@@ -194,6 +205,12 @@ HttpDownloader::DownloadError runGet(const std::string& url, const std::string& 
     }
     contentLength = esp_http_client_fetch_headers(client);
     status = esp_http_client_get_status_code(client);
+  }
+
+  if (status == 304) {
+    LOG_INF("HTTP", "304 Not Modified");
+    esp_http_client_cleanup(client);
+    return HttpDownloader::NOT_MODIFIED;
   }
 
   if (status != 200) {
@@ -249,14 +266,16 @@ HttpDownloader::DownloadError runGet(const std::string& url, const std::string& 
 // WiFiClient inside runGetWolf, so this is safe for non-TLS targets too.
 HttpDownloader::DownloadError runGetSecure(const std::string& url, const std::string& username,
                                            const std::string& password, Sink& sink,
-                                           bool downgradeRedirectsToHttp = false) {
+                                           bool downgradeRedirectsToHttp = false,
+                                           int timeoutMs = HTTP_TIMEOUT_MS,
+                                           const std::string& ifNoneMatch = "") {
 #if defined(FREEINK_NET_WOLFSSL)
-  return runGetWolf(url, username, password, sink, downgradeRedirectsToHttp);
+  return runGetWolf(url, username, password, sink, downgradeRedirectsToHttp, timeoutMs, ifNoneMatch);
 #else
   // esp_http_client follows redirects internally; the downgrade only exists on
   // the wolfSSL path, where the manual hop loop exposes the Location URL.
   (void)downgradeRedirectsToHttp;
-  return runGet(url, username, password, sink);
+  return runGet(url, username, password, sink, timeoutMs, ifNoneMatch);
 #endif
 }
 }  // namespace
@@ -270,7 +289,7 @@ bool HttpDownloader::fetchUrl(const std::string& url, Stream& outContent, const 
 }
 
 bool HttpDownloader::fetchUrl(const std::string& url, std::string& outContent, const std::string& username,
-                              const std::string& password) {
+                              const std::string& password, int timeoutMs) {
   LOG_DBG("HTTP", "Fetching: %s", url.c_str());
   outContent.clear();  // start clean; the sink appends, so don't carry prior content
   Sink sink;
@@ -278,29 +297,31 @@ bool HttpDownloader::fetchUrl(const std::string& url, std::string& outContent, c
     outContent.append(reinterpret_cast<const char*>(data), len);
     return true;
   };
-  return runGetSecure(url, username, password, sink) == OK;
+  return runGetSecure(url, username, password, sink, false, timeoutMs) == OK;
 }
 
 bool HttpDownloader::fetchUrl(const std::string& url, const DataCallback& onData, const std::string& username,
-                              const std::string& password) {
+                              const std::string& password, int timeoutMs) {
   LOG_DBG("HTTP", "Fetching: %s", url.c_str());
   Sink sink;
   sink.write = onData;
-  return runGetSecure(url, username, password, sink) == OK;
+  return runGetSecure(url, username, password, sink, false, timeoutMs) == OK;
 }
 
 HttpDownloader::DownloadError HttpDownloader::downloadToFile(const std::string& url, const std::string& destPath,
                                                              ProgressCallback progress, bool* cancelFlag,
                                                              const std::string& username, const std::string& password,
-                                                             bool downgradeRedirectsToHttp) {
+                                                             bool downgradeRedirectsToHttp, int timeoutMs,
+                                                             const std::string& ifNoneMatch) {
   LOG_DBG("HTTP", "Downloading: %s -> %s", url.c_str(), destPath.c_str());
 
-  if (Storage.exists(destPath.c_str())) {
-    Storage.remove(destPath.c_str());
+  const std::string tempPath = destPath + ".tmp";
+  if (Storage.exists(tempPath.c_str())) {
+    Storage.remove(tempPath.c_str());
   }
   HalFile file;
-  if (!Storage.openFileForWrite("HTTP", destPath.c_str(), file)) {
-    LOG_ERR("HTTP", "Failed to open file for writing");
+  if (!Storage.openFileForWrite("HTTP", tempPath.c_str(), file)) {
+    LOG_ERR("HTTP", "Failed to open temp file for writing: %s", tempPath.c_str());
     return FILE_ERROR;
   }
 
@@ -309,20 +330,33 @@ HttpDownloader::DownloadError HttpDownloader::downloadToFile(const std::string& 
   sink.cancelFlag = cancelFlag;
   sink.write = [&file](const uint8_t* data, size_t len) { return file.write(data, len) == len; };
 
-  const DownloadError result = runGetSecure(url, username, password, sink, downgradeRedirectsToHttp);
-  // Close before any remove() on the same path; DESTRUCTOR_CLOSES_FILE would
-  // otherwise close only after the remove.
+  const DownloadError result = runGetSecure(url, username, password, sink, downgradeRedirectsToHttp, timeoutMs, ifNoneMatch);
   file.close();
 
+  if (result == NOT_MODIFIED) {
+    Storage.remove(tempPath.c_str());
+    LOG_INF("HTTP", "Preserved existing file on 304 Not Modified: %s", destPath.c_str());
+    return NOT_MODIFIED;
+  }
+
   if (result != OK) {
-    Storage.remove(destPath.c_str());
+    Storage.remove(tempPath.c_str());
     return result;
   }
   if (sink.downloaded == 0) {
     LOG_ERR("HTTP", "no data received");
-    Storage.remove(destPath.c_str());
+    Storage.remove(tempPath.c_str());
     return HTTP_ERROR;
   }
-  LOG_DBG("HTTP", "Downloaded %zu bytes", sink.downloaded);
+
+  if (Storage.exists(destPath.c_str())) {
+    Storage.remove(destPath.c_str());
+  }
+  if (!Storage.rename(tempPath.c_str(), destPath.c_str())) {
+    LOG_ERR("HTTP", "Failed to rename temp file %s to %s", tempPath.c_str(), destPath.c_str());
+    return FILE_ERROR;
+  }
+
+  LOG_DBG("HTTP", "Downloaded %zu bytes to %s", sink.downloaded, destPath.c_str());
   return OK;
 }

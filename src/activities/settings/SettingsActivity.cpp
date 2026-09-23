@@ -13,6 +13,7 @@
 
 #include "ButtonRemapActivity.h"
 #include "ClearCacheActivity.h"
+#include "CrossFrontSetupActivity.h"
 #include "CrossPointSettings.h"
 #include "FontDownloadActivity.h"
 #include "KOReaderSettingsActivity.h"
@@ -381,6 +382,16 @@ void SettingsActivity::toggleCurrentSetting() {
           startActivityForResult(std::move(activity), nullptr);
         } else {
           LOG_ERR("SETTINGS", "OOM: KeyboardLayoutsActivity");
+        }
+        break;
+      case SettingAction::CrossFrontSetup:
+        if (auto activity = makeUniqueNoThrow<CrossFrontSetupActivity>(renderer, mappedInput)) {
+          startActivityForResult(std::move(activity), [this](const ActivityResult&) {
+            rebuildSettingsLists();
+            requestUpdate();
+          });
+        } else {
+          LOG_ERR("SETTINGS", "OOM: CrossFrontSetupActivity");
         }
         break;
       case SettingAction::None:

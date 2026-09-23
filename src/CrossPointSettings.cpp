@@ -3,6 +3,7 @@
 #include <I18n.h>
 #include <Logging.h>
 #include <ObfuscationUtils.h>
+#include <esp_mac.h>
 
 #include <algorithm>
 #include <cstring>
@@ -100,6 +101,19 @@ void CrossPointSettings::toJson(JsonDocument& doc) const {
   if (dictionaryName[0] != '\0') {
     doc["dictionaryName"] = dictionaryName;
   }
+
+  // CrossFront settings
+  if (cfServerUrl[0] != '\0') {
+    doc["cfServerUrl"] = cfServerUrl;
+  }
+  if (cfWebUrl[0] != '\0') {
+    doc["cfWebUrl"] = cfWebUrl;
+  }
+  if (cfDeviceToken[0] != '\0') {
+    doc["cfDeviceToken"] = cfDeviceToken;
+  }
+  doc["cfUpdateInterval"] = cfUpdateInterval;
+  doc["cfFetchOnSleep"] = cfFetchOnSleep;
 
   // Language -- managed by LanguageSelectActivity, not in SettingsList.
   // Stored as ISO code string ("EN", "DE", ...) for stability across enum reorders.
@@ -232,6 +246,29 @@ bool CrossPointSettings::fromJson(JsonVariantConst doc) {
   if (doc["keyboardLayouts"].is<uint16_t>()) {
     keyboardLayouts = doc["keyboardLayouts"].as<uint16_t>();
   }
+
+  // CrossFront settings
+  if (doc["cfServerUrl"].is<const char*>()) {
+    copyToField(cfServerUrl, doc["cfServerUrl"].as<const char*>(), sizeof(cfServerUrl));
+  }
+  if (cfServerUrl[0] == '\0' || strstr(cfServerUrl, "192.168.1.3") != nullptr) {
+    strncpy(cfServerUrl, "https://cf-api.pocketgo.org", sizeof(cfServerUrl));
+    needsResave = true;
+  }
+
+  if (doc["cfWebUrl"].is<const char*>()) {
+    copyToField(cfWebUrl, doc["cfWebUrl"].as<const char*>(), sizeof(cfWebUrl));
+  }
+  if (cfWebUrl[0] == '\0' || strstr(cfWebUrl, "192.168.1.3") != nullptr) {
+    strncpy(cfWebUrl, "https://cf.pocketgo.org", sizeof(cfWebUrl));
+    needsResave = true;
+  }
+
+  if (doc["cfDeviceToken"].is<const char*>()) {
+    copyToField(cfDeviceToken, doc["cfDeviceToken"].as<const char*>(), sizeof(cfDeviceToken));
+  }
+  cfUpdateInterval = clamp(doc["cfUpdateInterval"] | (uint8_t)CF_ON_SLEEP, CF_INTERVAL_COUNT, CF_ON_SLEEP);
+  cfFetchOnSleep = clamp(doc["cfFetchOnSleep"] | (uint8_t)1, 2, 1);
 
   if (needsResave) {
     LOG_DBG("CPS", "Resaving settings to update format");
@@ -380,5 +417,30 @@ int CrossPointSettings::getReaderFontId() const {
     case 14:
     default:
       return sans ? NOTOSANS_14_FONT_ID : NOTOSERIF_14_FONT_ID;
+  }
+}
+
+void CrossPointSettings::getCfDeviceId(char* outId, size_t maxLen) const {
+  uint8_t mac[6] = {0};
+  esp_read_mac(mac, ESP_MAC_WIFI_STA);
+  snprintf(outId, maxLen, "CF-%02X%02X%02X", mac[3], mac[4], mac[5]);
+}
+
+uint32_t CrossPointSettings::getCfIntervalSeconds() const {
+  switch (cfUpdateInterval) {
+    case CF_1_MIN: return 60;
+    case CF_2_MIN: return 120;
+    case CF_5_MIN: return 5 * 60;
+    case CF_15_MIN: return 15 * 60;
+    case CF_30_MIN: return 30 * 60;
+    case CF_1_HOUR: return 3600;
+    case CF_2_HOURS: return 2 * 3600;
+    case CF_3_HOURS: return 3 * 3600;
+    case CF_6_HOURS: return 6 * 3600;
+    case CF_12_HOURS: return 12 * 3600;
+    case CF_1_DAY: return 24 * 3600;
+    case CF_ON_SLEEP:
+    default:
+      return 0;
   }
 }

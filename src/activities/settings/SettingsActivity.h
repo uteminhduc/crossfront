@@ -26,6 +26,7 @@ enum class SettingAction {
   DownloadFonts,
   TextSettings,
   KeyboardLayouts,
+  CrossFrontSetup,
 };
 
 struct SettingInfo {
@@ -91,11 +92,12 @@ struct SettingInfo {
     return s;
   }
 
-  static SettingInfo Action(StrId nameId, SettingAction action) {
+  static SettingInfo Action(StrId nameId, SettingAction action, StrId category = StrId::STR_NONE_OPT) {
     SettingInfo s;
     s.nameId = nameId;
     s.type = SettingType::ACTION;
     s.action = action;
+    s.category = category;
     return s;
   }
 

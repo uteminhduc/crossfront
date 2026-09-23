@@ -33,6 +33,7 @@
 #include "RecentBooksStore.h"
 #include "SdCardFontSystem.h"
 #include "activities/Activity.h"
+#include "crossfront/CrossFrontService.h"
 #include "activities/ActivityManager.h"
 #include "activities/settings/SdFirmwareUpdateActivity.h"
 #include "components/UITheme.h"
@@ -291,6 +292,9 @@ void enterDeepSleep(bool fromTimeout = false) {
   halTiltSensor.deepSleep();
   display.deepSleep();
   Storage.prepareForDeepSleep();
+
+  CrossFrontService::armSleepTimer();
+
   LOG_DBG("MAIN", "Entering deep sleep");
 
   powerManager.startDeepSleep(gpio);
@@ -372,6 +376,12 @@ void setup() {
 
   gpio.begin();
   powerManager.begin();
+
+  if (esp_sleep_get_wakeup_cause() == ESP_SLEEP_WAKEUP_TIMER) {
+    if (CrossFrontService::handleTimerWakeup(display, renderer)) {
+      powerManager.startDeepSleep(gpio);
+    }
+  }
 
   const auto wakeupReason = gpio.getWakeupReason();
   // Sample the wake hold now — a click wake is released within milliseconds of

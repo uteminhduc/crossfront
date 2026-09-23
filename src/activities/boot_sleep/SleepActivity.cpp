@@ -26,6 +26,7 @@
 #include "CrossPointState.h"
 #include "activities/reader/ReaderUtils.h"
 #include "components/UITheme.h"
+#include "crossfront/CrossFrontService.h"
 #include "fontIds.h"
 #include "images/Logo120.h"
 #include "images/MoonIcon.h"
@@ -558,6 +559,8 @@ void SleepActivity::onEnter() {
       } else {
         return renderCustomSleepScreen();
       }
+    case (CrossPointSettings::SLEEP_SCREEN_MODE::CROSSFRONT):
+      return renderCrossFrontSleepScreen();
     default:
       return renderDefaultSleepScreen();
   }
@@ -886,4 +889,10 @@ void SleepActivity::renderLastScreenSleepScreen() const {
 void SleepActivity::renderBlankSleepScreen() const {
   renderer.clearScreen();
   renderer.displayBuffer(HalDisplay::HALF_REFRESH);
+}
+
+void SleepActivity::renderCrossFrontSleepScreen() const {
+  if (!CrossFrontService::renderSleepScreen(renderer)) {
+    renderDefaultSleepScreen();
+  }
 }
