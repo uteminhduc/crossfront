@@ -76,17 +76,31 @@ def get_base_version(project_dir):
     return config.get('crosspoint', 'version')
 
 
-def inject_version(env):
-    # Only applies to development environments; release envs set the
-    # version via build_flags in platformio.ini and are unaffected.
-    if env['PIOENV'] not in ('default', 'sticky'):
-        return
+def get_crossfront_version(project_dir):
+    ini_path = os.path.join(project_dir, 'platformio.ini')
+    if not os.path.isfile(ini_path):
+        return '1.0'
+    config = configparser.ConfigParser()
+    config.read(ini_path, encoding='utf-8')
+    if config.has_option('crossfront', 'version'):
+        return config.get('crossfront', 'version')
+    return '1.0'
 
+
+def inject_version(env):
+    pioenv = env['PIOENV']
     project_dir = env['PROJECT_DIR']
     base_version = get_base_version(project_dir)
-    branch = get_git_branch(project_dir)
-    short_sha = get_git_short_sha(project_dir)
-    version_string = f'{base_version}-dev-{branch}-{short_sha}'
+    cf_version = get_crossfront_version(project_dir)
+    short_sha = os.environ.get('CROSSPOINT_RC_HASH') or get_git_short_sha(project_dir)
+
+    if pioenv.endswith('_rc'):
+        version_string = f'{base_version}-rc+{short_sha}.cf{cf_version}'
+    elif pioenv in ('default', 'sticky'):
+        branch = get_git_branch(project_dir)
+        version_string = f'{base_version}-dev-{branch}-{short_sha}+cf{cf_version}'
+    else:
+        return
 
     env.Append(CPPDEFINES=[('CROSSPOINT_VERSION', f'\\"{version_string}\\"')])
     print(f'CrossPoint build version: {version_string}')
