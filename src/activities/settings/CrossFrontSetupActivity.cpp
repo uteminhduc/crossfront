@@ -15,6 +15,7 @@
 #include "MappedInputManager.h"
 #include "WifiCredentialStore.h"
 #include "components/UITheme.h"
+#include "crossfront/CrossFrontCrypto.h"
 #include "crossfront/CrossFrontService.h"
 #include "crossfront/CrossFrontSettings.h"
 #include "fontIds.h"
@@ -27,9 +28,6 @@ namespace {
 constexpr int QR_SIZE = 216;
 constexpr int QR_PAD = 24;
 constexpr int QR_RIGHT_PAD = 36;
-constexpr char TOKEN_ALPHABET[] = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789";
-constexpr size_t TOKEN_LENGTH = 8;
-constexpr uint8_t TOKEN_RANDOM_LIMIT = 248;
 }
 
 CrossFrontSetupActivity::CrossFrontSetupActivity(GfxRenderer& renderer, MappedInputManager& mappedInput)
@@ -55,18 +53,7 @@ void CrossFrontSetupActivity::ensureTokenGenerated() {
   CROSSFRONT_SETTINGS.getDeviceId(deviceId, sizeof(deviceId));
 
   if (CROSSFRONT_SETTINGS.deviceToken[0] == '\0') {
-    size_t tokenIndex = 0;
-    while (tokenIndex < TOKEN_LENGTH) {
-      const uint32_t randomValue = esp_random();
-      for (uint8_t byteIndex = 0; byteIndex < sizeof(randomValue) && tokenIndex < TOKEN_LENGTH; ++byteIndex) {
-        const uint8_t randomByte = static_cast<uint8_t>(randomValue >> (byteIndex * 8));
-        if (randomByte < TOKEN_RANDOM_LIMIT) {
-          CROSSFRONT_SETTINGS.deviceToken[tokenIndex++] =
-              TOKEN_ALPHABET[randomByte % (sizeof(TOKEN_ALPHABET) - 1)];
-        }
-      }
-    }
-    CROSSFRONT_SETTINGS.deviceToken[TOKEN_LENGTH] = '\0';
+    crossfront::generateRandomToken(CROSSFRONT_SETTINGS.deviceToken, 16);
     CROSSFRONT_SETTINGS.saveToFile();
   }
 }
@@ -84,7 +71,9 @@ std::string CrossFrontSetupActivity::getPairingUrl() const {
 
   const char* cleanId = (strncmp(deviceId, "CF-", 3) == 0) ? (deviceId + 3) : deviceId;
 
-  return base + "/connect?dev=" + cleanId + "&token=" + CROSSFRONT_SETTINGS.deviceToken +
+  return base + "/connect?dev=" + cleanId +
+         "&token=" + CROSSFRONT_SETTINGS.deviceToken +
+         "&secret=" + CROSSFRONT_SETTINGS.deviceToken +
          "&model=" + model +
          "&w=" + std::to_string(BoardConfig::ACTIVE.displayWidth) +
          "&h=" + std::to_string(BoardConfig::ACTIVE.displayHeight);

@@ -67,7 +67,9 @@ struct WifiPowerSaveGuard {
 HttpDownloader::DownloadError runGetWolf(const std::string& startUrl, const std::string& username,
                                          const std::string& password, Sink& sink, bool downgradeRedirectsToHttp,
                                          int timeoutMs = HTTP_TIMEOUT_MS, const std::string& ifNoneMatch = "",
-                                         std::string* responseEtag = nullptr) {
+                                         std::string* responseEtag = nullptr,
+                                         const std::vector<std::pair<std::string, std::string>>& extraHeaders = {},
+                                         uint32_t* responsePollInterval = nullptr) {
   WifiPowerSaveGuard psGuard;
   std::string url = startUrl;
 
@@ -91,6 +93,11 @@ HttpDownloader::DownloadError runGetWolf(const std::string& startUrl, const std:
     if (!ifNoneMatch.empty()) {
       http.addHeader("If-None-Match", ifNoneMatch.c_str());
     }
+    for (const auto& h : extraHeaders) {
+      if (!h.first.empty() && !h.second.empty()) {
+        http.addHeader(h.first, h.second);
+      }
+    }
 
     LOG_DBG("HTTP", "wolfSSL GET: %s", url.c_str());
     const int status = http.GET(
@@ -108,6 +115,12 @@ HttpDownloader::DownloadError runGetWolf(const std::string& startUrl, const std:
     if (status < 0) {
       LOG_ERR("HTTP", "wolfSSL request failed: %s", url.c_str());
       return HttpDownloader::HTTP_ERROR;
+    }
+    if (responsePollInterval) {
+      const std::string pollStr = http.getHeader("x-poll-interval");
+      if (!pollStr.empty()) {
+        *responsePollInterval = static_cast<uint32_t>(strtoul(pollStr.c_str(), nullptr, 10));
+      }
     }
     if (status == 304) {
       LOG_INF("HTTP", "wolfSSL 304 Not Modified");
@@ -152,7 +165,9 @@ HttpDownloader::DownloadError runGetWolf(const std::string& startUrl, const std:
 // large/slow files and surfaces a short read directly.
 HttpDownloader::DownloadError runGet(const std::string& url, const std::string& username, const std::string& password,
                                      Sink& sink, int timeoutMs = HTTP_TIMEOUT_MS,
-                                     const std::string& ifNoneMatch = "", std::string* responseEtag = nullptr) {
+                                     const std::string& ifNoneMatch = "", std::string* responseEtag = nullptr,
+                                     const std::vector<std::pair<std::string, std::string>>& extraHeaders = {},
+                                     uint32_t* responsePollInterval = nullptr) {
   WifiPowerSaveGuard psGuard;
   esp_http_client_config_t config = {};
   config.url = url.c_str();
@@ -184,6 +199,11 @@ HttpDownloader::DownloadError runGet(const std::string& url, const std::string& 
   if (!ifNoneMatch.empty()) {
     esp_http_client_set_header(client, "If-None-Match", ifNoneMatch.c_str());
   }
+  for (const auto& h : extraHeaders) {
+    if (!h.first.empty() && !h.second.empty()) {
+      esp_http_client_set_header(client, h.first.c_str(), h.second.c_str());
+    }
+  }
 
   // open()/read() does not auto-follow redirects (only perform() does), so step
   // 30x responses manually. OPDS download endpoints and the GitHub release CDN
@@ -207,6 +227,13 @@ HttpDownloader::DownloadError runGet(const std::string& url, const std::string& 
     }
     contentLength = esp_http_client_fetch_headers(client);
     status = esp_http_client_get_status_code(client);
+  }
+
+  if (responsePollInterval) {
+    char* pollHeader = nullptr;
+    if (esp_http_client_get_header(client, "X-Poll-Interval", &pollHeader) == ESP_OK && pollHeader) {
+      *responsePollInterval = static_cast<uint32_t>(strtoul(pollHeader, nullptr, 10));
+    }
   }
 
   if (status == 304) {
@@ -275,14 +302,17 @@ HttpDownloader::DownloadError runGetSecure(const std::string& url, const std::st
                                            const std::string& password, Sink& sink,
                                            bool downgradeRedirectsToHttp = false,
                                            int timeoutMs = HTTP_TIMEOUT_MS,
-                                           const std::string& ifNoneMatch = "", std::string* responseEtag = nullptr) {
+                                           const std::string& ifNoneMatch = "", std::string* responseEtag = nullptr,
+                                           const std::vector<std::pair<std::string, std::string>>& extraHeaders = {},
+                                           uint32_t* responsePollInterval = nullptr) {
 #if defined(FREEINK_NET_WOLFSSL)
-  return runGetWolf(url, username, password, sink, downgradeRedirectsToHttp, timeoutMs, ifNoneMatch, responseEtag);
+  return runGetWolf(url, username, password, sink, downgradeRedirectsToHttp, timeoutMs, ifNoneMatch, responseEtag,
+                    extraHeaders, responsePollInterval);
 #else
   // esp_http_client follows redirects internally; the downgrade only exists on
   // the wolfSSL path, where the manual hop loop exposes the Location URL.
   (void)downgradeRedirectsToHttp;
-  return runGet(url, username, password, sink, timeoutMs, ifNoneMatch, responseEtag);
+  return runGet(url, username, password, sink, timeoutMs, ifNoneMatch, responseEtag, extraHeaders, responsePollInterval);
 #endif
 }
 }  // namespace
@@ -319,7 +349,9 @@ HttpDownloader::DownloadError HttpDownloader::downloadToFile(const std::string& 
                                                              ProgressCallback progress, bool* cancelFlag,
                                                              const std::string& username, const std::string& password,
                                                              bool downgradeRedirectsToHttp, int timeoutMs,
-                                                             const std::string& ifNoneMatch, std::string* responseEtag) {
+                                                             const std::string& ifNoneMatch, std::string* responseEtag,
+                                                             const std::vector<std::pair<std::string, std::string>>& extraHeaders,
+                                                             uint32_t* responsePollInterval) {
   LOG_DBG("HTTP", "Downloading: %s -> %s", url.c_str(), destPath.c_str());
 
   const std::string tempPath = destPath + ".tmp";
@@ -354,7 +386,8 @@ HttpDownloader::DownloadError HttpDownloader::downloadToFile(const std::string& 
 
   std::string downloadedEtag;
   const DownloadError result =
-      runGetSecure(url, username, password, sink, downgradeRedirectsToHttp, timeoutMs, ifNoneMatch, &downloadedEtag);
+      runGetSecure(url, username, password, sink, downgradeRedirectsToHttp, timeoutMs, ifNoneMatch, &downloadedEtag,
+                   extraHeaders, responsePollInterval);
   file.close();
 
   if (result == NOT_MODIFIED) {

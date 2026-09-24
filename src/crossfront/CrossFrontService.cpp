@@ -8,12 +8,43 @@
 #include <esp_sleep.h>
 
 #include <algorithm>
+#include <ctime>
 #include <vector>
+
+#include <esp_random.h>
 
 #include "CrossPointSettings.h"
 #include "WifiCredentialStore.h"
+#include "crossfront/CrossFrontCrypto.h"
 #include "crossfront/CrossFrontSettings.h"
 #include "network/HttpDownloader.h"
+
+namespace {
+std::vector<std::pair<std::string, std::string>> makeCrossFrontHeaders(const char* deviceId, const char* token) {
+  time_t now = time(nullptr);
+  const uint32_t timestamp = (now > 1700000000) ? static_cast<uint32_t>(now) : 0;
+
+  const uint32_t r1 = esp_random();
+  const uint32_t r2 = esp_random();
+  char nonce[17] = {0};
+  snprintf(nonce, sizeof(nonce), "%08lx%08lx", static_cast<unsigned long>(r1), static_cast<unsigned long>(r2));
+
+  const std::string secret = (token && token[0] != '\0') ? token : deviceId;
+  const std::string message = std::string(deviceId) + "\n" + std::to_string(timestamp) + "\n" + nonce;
+  const std::string signature = crossfront::computeHmacSha256(secret, message);
+
+  std::vector<std::pair<std::string, std::string>> headers;
+  headers.reserve(5);
+  headers.emplace_back("X-Device-Id", deviceId);
+  headers.emplace_back("X-Timestamp", std::to_string(timestamp));
+  headers.emplace_back("X-Nonce", nonce);
+  headers.emplace_back("X-Signature", signature);
+  if (token && token[0] != '\0') {
+    headers.emplace_back("X-Device-Token", token);
+  }
+  return headers;
+}
+}  // namespace
 
 std::string CrossFrontService::getSavedEtag() {
   std::string savedEtag = "";
@@ -157,8 +188,19 @@ bool CrossFrontService::fetchSleepImageConditional(unsigned long maxBudgetMs) {
     LOG_INF("CF", "Conditional fetch from %s (etag: %s, timeout: %dms)", url.c_str(), savedEtag.c_str(), httpTimeout);
 
     std::string responseEtag;
+    uint32_t responsePollInterval = 0xFFFFFFFF;
+    auto extraHeaders = makeCrossFrontHeaders(deviceId, token);
+
     const auto err = HttpDownloader::downloadToFile(url, SLEEP_BMP_PATH, nullptr, nullptr, "", "", false,
-                                                    httpTimeout, savedEtag, &responseEtag);
+                                                    httpTimeout, savedEtag, &responseEtag,
+                                                    extraHeaders, &responsePollInterval);
+    if (responsePollInterval != 0xFFFFFFFF &&
+        responsePollInterval != CROSSFRONT_SETTINGS.serverPollIntervalSeconds) {
+      CROSSFRONT_SETTINGS.serverPollIntervalSeconds = responsePollInterval;
+      CROSSFRONT_SETTINGS.saveToFile();
+      LOG_INF("CF", "Server updated poll interval to %u seconds", static_cast<unsigned>(responsePollInterval));
+    }
+
     if (err == HttpDownloader::DownloadError::OK) {
       hasNewImage = true;
       saveEtag(responseEtag);
@@ -231,10 +273,12 @@ bool CrossFrontService::renderSleepScreen(const GfxRenderer& renderer) {
 
 void CrossFrontService::armSleepTimer() {
   if (SETTINGS.sleepScreen == CrossPointSettings::SLEEP_SCREEN_MODE::CROSSFRONT) {
-    const uint32_t intervalSec = CROSSFRONT_SETTINGS.getUpdateIntervalSeconds();
+    const uint32_t intervalSec = CROSSFRONT_SETTINGS.getEffectiveUpdateIntervalSeconds();
     if (intervalSec > 0) {
       esp_sleep_enable_timer_wakeup(static_cast<uint64_t>(intervalSec) * 1000000ULL);
-      LOG_DBG("CF", "CrossFront sleep timer set to %u seconds", static_cast<unsigned>(intervalSec));
+      LOG_DBG("CF", "CrossFront sleep timer set to %u seconds (server override: %u)",
+              static_cast<unsigned>(intervalSec),
+              static_cast<unsigned>(CROSSFRONT_SETTINGS.serverPollIntervalSeconds));
     }
   }
 }
@@ -379,8 +423,18 @@ CrossFrontService::SyncResult CrossFrontService::syncNow(ProgressFn onProgress, 
 
   std::string imageUrl = server + "/api/cf/device/" + token + "/sleep.bmp";
   std::string responseEtag;
+  uint32_t responsePollInterval = 0xFFFFFFFF;
+  auto extraHeaders = makeCrossFrontHeaders(deviceId, token);
+
   const auto err = HttpDownloader::downloadToFile(imageUrl, SLEEP_BMP_PATH, nullptr, nullptr, "", "", false,
-                                                  static_cast<int>(imageRemainingMs), "", &responseEtag);
+                                                  static_cast<int>(imageRemainingMs), "", &responseEtag,
+                                                  extraHeaders, &responsePollInterval);
+  if (responsePollInterval != 0xFFFFFFFF &&
+      responsePollInterval != CROSSFRONT_SETTINGS.serverPollIntervalSeconds) {
+    CROSSFRONT_SETTINGS.serverPollIntervalSeconds = responsePollInterval;
+    CROSSFRONT_SETTINGS.saveToFile();
+    LOG_INF("CF", "syncNow: Server updated poll interval to %u seconds", static_cast<unsigned>(responsePollInterval));
+  }
   disconnectWifi();
 
   if (err == HttpDownloader::DownloadError::OK) {

@@ -3,6 +3,8 @@
 
 #include <functional>
 #include <string>
+#include <utility>
+#include <vector>
 
 /**
  * HTTP client utility for fetching content and downloading files. Built on
@@ -57,5 +59,7 @@ class HttpDownloader {
                                       ProgressCallback progress = nullptr, bool* cancelFlag = nullptr,
                                       const std::string& username = "", const std::string& password = "",
                                       bool downgradeRedirectsToHttp = false, int timeoutMs = 60000,
-                                      const std::string& ifNoneMatch = "", std::string* responseEtag = nullptr);
+                                      const std::string& ifNoneMatch = "", std::string* responseEtag = nullptr,
+                                      const std::vector<std::pair<std::string, std::string>>& extraHeaders = {},
+                                      uint32_t* responsePollInterval = nullptr);
 };

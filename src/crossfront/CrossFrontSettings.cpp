@@ -33,12 +33,15 @@ CrossFrontSettings::CrossFrontSettings() {
   copyToField(webUrl, DEFAULT_WEB_URL, sizeof(webUrl));
 }
 
+#include "crossfront/CrossFrontCrypto.h"
+
 void CrossFrontSettings::toJson(JsonDocument& doc) const {
   if (serverUrl[0] != '\0') doc["serverUrl"] = serverUrl;
   if (webUrl[0] != '\0') doc["webUrl"] = webUrl;
   if (deviceToken[0] != '\0') doc["deviceToken"] = deviceToken;
   doc["updateInterval"] = updateInterval;
   doc["sleepNetworkTimeoutMs"] = sleepNetworkTimeoutMs;
+  if (serverPollIntervalSeconds > 0) doc["serverPollIntervalSeconds"] = serverPollIntervalSeconds;
 }
 
 bool CrossFrontSettings::fromJson(const JsonVariantConst doc) {
@@ -55,13 +58,12 @@ bool CrossFrontSettings::fromJson(const JsonVariantConst doc) {
   if (webUrl[0] == '\0') copyToField(webUrl, DEFAULT_WEB_URL, sizeof(webUrl));
   updateInterval = validInterval(doc["updateInterval"] | static_cast<uint8_t>(ON_SLEEP));
   sleepNetworkTimeoutMs = validSleepNetworkTimeout(doc["sleepNetworkTimeoutMs"] | static_cast<uint16_t>(15000));
+  serverPollIntervalSeconds = doc["serverPollIntervalSeconds"] | static_cast<uint32_t>(0);
   return true;
 }
 
 void CrossFrontSettings::getDeviceId(char* outId, const size_t maxLen) const {
-  uint8_t mac[6] = {0};
-  esp_read_mac(mac, ESP_MAC_WIFI_STA);
-  snprintf(outId, maxLen, "CF-%02X%02X%02X", mac[3], mac[4], mac[5]);
+  crossfront::getDeviceHardwareId(outId, maxLen);
 }
 
 uint32_t CrossFrontSettings::getUpdateIntervalSeconds() const {
@@ -80,4 +82,11 @@ uint32_t CrossFrontSettings::getUpdateIntervalSeconds() const {
     case ON_SLEEP:
     default: return 0;
   }
+}
+
+uint32_t CrossFrontSettings::getEffectiveUpdateIntervalSeconds() const {
+  if (serverPollIntervalSeconds > 0) {
+    return serverPollIntervalSeconds;
+  }
+  return getUpdateIntervalSeconds();
 }

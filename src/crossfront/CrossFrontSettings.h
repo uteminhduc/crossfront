@@ -37,9 +37,10 @@ class CrossFrontSettings : public PersistableStore<CrossFrontSettings> {
 
   char serverUrl[128] = "";
   char webUrl[128] = "";
-  char deviceToken[32] = "";
+  char deviceToken[64] = "";
   uint8_t updateInterval = ON_SLEEP;
   uint16_t sleepNetworkTimeoutMs = 15000;
+  uint32_t serverPollIntervalSeconds = 0;
 
   static const char* getFilePath() { return "/.crosspoint/crossfront.json"; }
   void toJson(JsonDocument& doc) const;
@@ -55,6 +56,7 @@ class CrossFrontSettings : public PersistableStore<CrossFrontSettings> {
 
   void getDeviceId(char* outId, size_t maxLen) const;
   uint32_t getUpdateIntervalSeconds() const;
+  uint32_t getEffectiveUpdateIntervalSeconds() const;
 };
 
 #define CROSSFRONT_SETTINGS CrossFrontSettings::getInstance()
