@@ -23,9 +23,9 @@
 namespace fui = freeink::ui;
 
 namespace {
-constexpr int QR_SIZE = 230;
-constexpr int QR_TOP_SPACING = 24;
-constexpr int QR_BOTTOM_SPACING = 16;
+constexpr int QR_SIZE = 240;
+constexpr int QR_TOP_PAD = 10;
+constexpr int QR_BOTTOM_PAD = 14;
 constexpr char TOKEN_ALPHABET[] = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789";
 constexpr size_t TOKEN_LENGTH = 8;
 constexpr uint8_t TOKEN_RANDOM_LIMIT = 248;
@@ -71,7 +71,7 @@ void CrossFrontSetupActivity::ensureTokenGenerated() {
 }
 
 std::string CrossFrontSetupActivity::getPairingUrl() const {
-  std::string base = CROSSFRONT_SETTINGS.webUrl[0] != '\0' ? CROSSFRONT_SETTINGS.webUrl : "https://cf.pocketgo.org";
+  std::string base = CROSSFRONT_SETTINGS.getWebUrl();
   if (!base.empty() && base.back() == '/') {
     base.pop_back();
   }
@@ -125,8 +125,8 @@ int CrossFrontSetupActivity::listCount() const {
 
 int CrossFrontSetupActivity::computeQrSectionHeight() const {
   const auto& metrics = UITheme::getInstance().getMetrics();
-  // Header band + top padding + spacing + device info + QR padding + QR + divider.
-  return metrics.topPadding + metrics.headerHeight + 6 + 22 + QR_TOP_SPACING + QR_SIZE + QR_BOTTOM_SPACING + 2;
+  // Header band + top padding + spacing + QR padding + QR + bottom padding + divider.
+  return metrics.topPadding + metrics.headerHeight + 6 + QR_TOP_PAD + QR_SIZE + QR_BOTTOM_PAD + 2;
 }
 
 const char* CrossFrontSetupActivity::headerTitle() const {
@@ -139,6 +139,8 @@ void CrossFrontSetupActivity::onEnter() {
   UiListActivity::onEnter();
   ensureTokenGenerated();
   syncStatus = SyncStatus::IDLE;
+  currentSyncStep = CrossFrontService::SyncStep::CONNECTING_WIFI;
+  lastSyncResult = CrossFrontService::SyncResult::OK;
   viewMode = ViewMode::MAIN;
 
   // Default selection to row 0 (Sync Now)
@@ -162,23 +164,43 @@ void CrossFrontSetupActivity::drawChrome() {
 
   const auto pageWidth = renderer.getScreenWidth();
   const auto& metrics = UITheme::getInstance().getMetrics();
-  int curY = metrics.topPadding + metrics.headerHeight + 6;
+  const int topY = metrics.topPadding + metrics.headerHeight + 6;
+  const int qrY = topY + QR_TOP_PAD;
 
-  // Device info: Model | ID | Token
-  const char* cleanId = (strncmp(deviceId, "CF-", 3) == 0) ? (deviceId + 3) : deviceId;
-  char infoBuf[128];
-  snprintf(infoBuf, sizeof(infoBuf), "%s  |  %s  |  %s", getFriendlyModelName().c_str(), cleanId,
-           CROSSFRONT_SETTINGS.deviceToken);
-  renderer.drawCenteredText(UI_12_FONT_ID, curY, infoBuf, true, EpdFontFamily::BOLD);
-  curY += 22 + QR_TOP_SPACING;
-
-  const int qrX = (pageWidth - QR_SIZE) / 2;
-  const Rect qrBounds(qrX, curY, QR_SIZE, QR_SIZE);
+  // 1. Right side: QR code (enlarged)
+  const int qrX = pageWidth - QR_SIZE - 40;
+  const Rect qrBounds(qrX, qrY, QR_SIZE, QR_SIZE);
   QrUtils::drawQrCode(renderer, qrBounds, getPairingUrl());
-  curY += QR_SIZE + QR_BOTTOM_SPACING;
+
+  // 2. Left side: Webapp address, Device ID, and Token
+  const int leftX = 40;
+  const int indentX = leftX + 24;
+
+  // Line 1: Web App address
+  char webBuf[128];
+  snprintf(webBuf, sizeof(webBuf), "%s  (%s)", CROSSFRONT_SETTINGS.getWebUrl(), getFriendlyModelName().c_str());
+  const int line1Y = qrY + 14;
+  renderer.drawText(UI_12_FONT_ID, leftX, line1Y, webBuf, true, EpdFontFamily::BOLD);
+
+  // Line 2: "Mã thiết bị" (normal text)
+  const int line2Y = line1Y + 36;
+  renderer.drawText(UI_10_FONT_ID, leftX, line2Y, tr(STR_CROSSFRONT_DEVICE_ID), true, EpdFontFamily::REGULAR);
+
+  // Line 3: <mã thiết bị> (indented, bold, larger text)
+  const int line3Y = line2Y + 22;
+  renderer.drawText(NOTOSANS_18_FONT_ID, indentX, line3Y, deviceId, true, EpdFontFamily::BOLD);
+
+  // Line 4: "Token" (normal text)
+  const int line4Y = line3Y + 40;
+  renderer.drawText(UI_10_FONT_ID, leftX, line4Y, tr(STR_CROSSFRONT_TOKEN), true, EpdFontFamily::REGULAR);
+
+  // Line 5: <token> (indented, bold, larger text)
+  const int line5Y = line4Y + 22;
+  renderer.drawText(NOTOSANS_18_FONT_ID, indentX, line5Y, CROSSFRONT_SETTINGS.deviceToken, true, EpdFontFamily::BOLD);
 
   // Divider line
-  renderer.drawLine(0, curY, pageWidth - 1, curY, true);
+  const int dividerY = qrY + QR_SIZE + QR_BOTTOM_PAD;
+  renderer.drawLine(0, dividerY, pageWidth - 1, dividerY, true);
 }
 
 void CrossFrontSetupActivity::buildScreen(UiScreen& screen) {
@@ -195,11 +217,38 @@ void CrossFrontSetupActivity::buildScreen(UiScreen& screen) {
     rowItems[0].sectionHeading = nullptr;
     rowItems[0].label = tr(STR_CROSSFRONT_SYNC_NOW);
     if (syncStatus == SyncStatus::SYNCING) {
-      rowValues[0] = tr(STR_CROSSFRONT_SYNCING);
-    } else if (syncStatus == SyncStatus::SUCCESS) {
-      rowValues[0] = tr(STR_CROSSFRONT_SYNC_OK);
-    } else if (syncStatus == SyncStatus::FAILED) {
-      rowValues[0] = tr(STR_CROSSFRONT_SYNC_FAILED);
+      switch (currentSyncStep) {
+        case CrossFrontService::SyncStep::CONNECTING_WIFI:
+          rowValues[0] = tr(STR_CROSSFRONT_CONNECTING_WIFI);
+          break;
+        case CrossFrontService::SyncStep::FETCHING_CONFIG:
+          rowValues[0] = tr(STR_CROSSFRONT_FETCHING_CONFIG);
+          break;
+        case CrossFrontService::SyncStep::FETCHING_IMAGE:
+          rowValues[0] = tr(STR_CROSSFRONT_FETCHING_IMAGE);
+          break;
+      }
+    } else if (syncStatus == SyncStatus::FINISHED) {
+      switch (lastSyncResult) {
+        case CrossFrontService::SyncResult::OK:
+          rowValues[0] = tr(STR_CROSSFRONT_SYNC_OK);
+          break;
+        case CrossFrontService::SyncResult::NO_WIFI_CONFIGURED:
+          rowValues[0] = tr(STR_CROSSFRONT_ERR_NO_WIFI);
+          break;
+        case CrossFrontService::SyncResult::WIFI_CONNECT_FAILED:
+          rowValues[0] = tr(STR_CROSSFRONT_ERR_WIFI);
+          break;
+        case CrossFrontService::SyncResult::CONFIG_FETCH_FAILED:
+          rowValues[0] = tr(STR_CROSSFRONT_ERR_SERVER);
+          break;
+        case CrossFrontService::SyncResult::IMAGE_FETCH_FAILED:
+          rowValues[0] = tr(STR_CROSSFRONT_ERR_IMAGE);
+          break;
+        case CrossFrontService::SyncResult::TIMEOUT:
+          rowValues[0] = tr(STR_CROSSFRONT_ERR_TIMEOUT);
+          break;
+      }
     } else {
       rowValues[0] = "";
     }
@@ -226,7 +275,7 @@ void CrossFrontSetupActivity::buildScreen(UiScreen& screen) {
       rowItems[index].actionValue = static_cast<int16_t>(index);
     }
   } else {
-    constexpr uint16_t waitOptionsMs[WAIT_ITEM_COUNT] = {3000, 5000, 10000, 15000};
+    constexpr uint16_t waitOptionsMs[WAIT_ITEM_COUNT] = {15000, 20000, 25000, 30000};
     for (int index = 0; index < WAIT_ITEM_COUNT; ++index) {
       rowItems[index].sectionHeading = nullptr;
       rowValues[index] = getNetworkWaitLabel(waitOptionsMs[index]);
@@ -258,19 +307,28 @@ void CrossFrontSetupActivity::activateIndex(const int index) {
     } else if (index == 1) {
       viewMode = ViewMode::INTERVAL;
       nav.reset();
+      nav.selected = CROSSFRONT_SETTINGS.updateInterval;
       requestUpdate(true);
     } else if (index == 2) {
       viewMode = ViewMode::NETWORK_WAIT;
       nav.reset();
+      constexpr uint16_t waitOptionsMs[WAIT_ITEM_COUNT] = {15000, 20000, 25000, 30000};
+      for (int i = 0; i < WAIT_ITEM_COUNT; ++i) {
+        if (waitOptionsMs[i] == CROSSFRONT_SETTINGS.sleepNetworkTimeoutMs) {
+          nav.selected = i;
+          break;
+        }
+      }
       requestUpdate(true);
     }
     return;
   }
 
+  const int returnRow = (viewMode == ViewMode::INTERVAL) ? 1 : 2;
   if (viewMode == ViewMode::INTERVAL) {
     CROSSFRONT_SETTINGS.updateInterval = static_cast<CrossFrontSettings::UpdateInterval>(index);
   } else {
-    constexpr uint16_t waitOptionsMs[WAIT_ITEM_COUNT] = {3000, 5000, 10000, 15000};
+    constexpr uint16_t waitOptionsMs[WAIT_ITEM_COUNT] = {15000, 20000, 25000, 30000};
     if (index < 0 || index >= WAIT_ITEM_COUNT) return;
     CROSSFRONT_SETTINGS.sleepNetworkTimeoutMs = waitOptionsMs[index];
   }
@@ -278,28 +336,40 @@ void CrossFrontSetupActivity::activateIndex(const int index) {
   CROSSFRONT_SETTINGS.saveToFile();
   viewMode = ViewMode::MAIN;
   nav.reset();
+  nav.selected = returnRow;
   requestUpdate(true);
 }
 
 void CrossFrontSetupActivity::onBackButton() {
   if (viewMode != ViewMode::MAIN) {
+    const int returnRow = (viewMode == ViewMode::INTERVAL) ? 1 : 2;
     viewMode = ViewMode::MAIN;
     nav.reset();
+    nav.selected = returnRow;
     requestUpdate(true);
     return;
   }
   finish();
 }
 
-void CrossFrontSetupActivity::performManualSync() {
+void CrossFrontSetupActivity::onSyncProgress(CrossFrontService::SyncStep step, void* userData) {
+  auto* self = static_cast<CrossFrontSetupActivity*>(userData);
+  if (self) {
+    self->handleSyncStep(step);
+  }
+}
+
+void CrossFrontSetupActivity::handleSyncStep(CrossFrontService::SyncStep step) {
+  currentSyncStep = step;
   syncStatus = SyncStatus::SYNCING;
   requestUpdateAndWait();
+}
 
-  const auto result = CrossFrontService::syncNow();
-  if (result == CrossFrontService::SyncResult::OK) {
-    syncStatus = SyncStatus::SUCCESS;
-  } else {
-    syncStatus = SyncStatus::FAILED;
+void CrossFrontSetupActivity::performManualSync() {
+  const auto result = CrossFrontService::syncNow(&CrossFrontSetupActivity::onSyncProgress, this);
+  lastSyncResult = result;
+  syncStatus = SyncStatus::FINISHED;
+  if (result != CrossFrontService::SyncResult::OK) {
     LOG_ERR("CF", "Manual sync failed: %d", static_cast<int>(result));
   }
 

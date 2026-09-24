@@ -18,15 +18,20 @@ uint8_t validInterval(const uint8_t interval) {
 
 uint16_t validSleepNetworkTimeout(const uint16_t timeoutMs) {
   switch (timeoutMs) {
-    case 3000:
-    case 5000:
-    case 10000:
-    case 15000: return timeoutMs;
-    default: return 10000;
+    case 15000:
+    case 20000:
+    case 25000:
+    case 30000: return timeoutMs;
+    default: return 15000;
   }
 }
 
 }  // namespace
+
+CrossFrontSettings::CrossFrontSettings() {
+  copyToField(serverUrl, DEFAULT_SERVER_URL, sizeof(serverUrl));
+  copyToField(webUrl, DEFAULT_WEB_URL, sizeof(webUrl));
+}
 
 void CrossFrontSettings::toJson(JsonDocument& doc) const {
   if (serverUrl[0] != '\0') doc["serverUrl"] = serverUrl;
@@ -46,10 +51,10 @@ bool CrossFrontSettings::fromJson(const JsonVariantConst doc) {
   if (doc["deviceToken"].is<const char*>()) {
     copyToField(deviceToken, doc["deviceToken"].as<const char*>(), sizeof(deviceToken));
   }
-  if (serverUrl[0] == '\0') copyToField(serverUrl, "https://cf-api.pocketgo.org", sizeof(serverUrl));
-  if (webUrl[0] == '\0') copyToField(webUrl, "https://cf.pocketgo.org", sizeof(webUrl));
+  if (serverUrl[0] == '\0') copyToField(serverUrl, DEFAULT_SERVER_URL, sizeof(serverUrl));
+  if (webUrl[0] == '\0') copyToField(webUrl, DEFAULT_WEB_URL, sizeof(webUrl));
   updateInterval = validInterval(doc["updateInterval"] | static_cast<uint8_t>(ON_SLEEP));
-  sleepNetworkTimeoutMs = validSleepNetworkTimeout(doc["sleepNetworkTimeoutMs"] | static_cast<uint16_t>(10000));
+  sleepNetworkTimeoutMs = validSleepNetworkTimeout(doc["sleepNetworkTimeoutMs"] | static_cast<uint16_t>(15000));
   return true;
 }
 

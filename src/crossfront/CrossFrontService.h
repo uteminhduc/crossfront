@@ -9,7 +9,8 @@ class CrossFrontService {
  public:
   static constexpr char SLEEP_BMP_PATH[] = "/.crosspoint/cf_sleep.bmp";
   static constexpr char ETAG_FILE_PATH[] = "/.crosspoint/cf_sleep.etag";
-  static constexpr unsigned long DEFAULT_SLEEP_NETWORK_TIMEOUT_MS = 10000;
+  static constexpr unsigned long DEFAULT_SLEEP_NETWORK_TIMEOUT_MS = 15000;
+  static constexpr unsigned long MANUAL_SYNC_TIMEOUT_MS = 30000;
 
   static std::string getSavedEtag();
   static void saveEtag(const std::string& etag);
@@ -31,11 +32,21 @@ class CrossFrontService {
     NO_WIFI_CONFIGURED,
     WIFI_CONNECT_FAILED,
     CONFIG_FETCH_FAILED,
-    IMAGE_FETCH_FAILED
+    IMAGE_FETCH_FAILED,
+    TIMEOUT
   };
 
-  // Immediate sync: connects Wi-Fi, fetches config/wifi_list & image, saves settings.
-  static SyncResult syncNow();
+  enum class SyncStep : uint8_t {
+    CONNECTING_WIFI,
+    FETCHING_CONFIG,
+    FETCHING_IMAGE
+  };
+
+  using ProgressFn = void (*)(SyncStep step, void* userData);
+
+  // Immediate sync: connects Wi-Fi, fetches config/wifi_list & image, saves settings (30s fixed budget).
+  static SyncResult syncNow(ProgressFn onProgress = nullptr, void* userData = nullptr,
+                            unsigned long timeoutMs = MANUAL_SYNC_TIMEOUT_MS);
 
   // Configures RTC timer wakeup based on CrossFront's update interval.
   static void armSleepTimer();

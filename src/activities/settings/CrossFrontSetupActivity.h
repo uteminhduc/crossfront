@@ -3,6 +3,7 @@
 #include <string>
 
 #include "activities/UiListActivity.h"
+#include "crossfront/CrossFrontService.h"
 #include "crossfront/CrossFrontSettings.h"
 
 class CrossFrontSetupActivity final : public UiListActivity {
@@ -28,6 +29,8 @@ class CrossFrontSetupActivity final : public UiListActivity {
   void ensureTokenGenerated();
   std::string getPairingUrl() const;
   void performManualSync();
+  static void onSyncProgress(CrossFrontService::SyncStep step, void* userData);
+  void handleSyncStep(CrossFrontService::SyncStep step);
   const char* getIntervalLabel(uint8_t interval) const;
   std::string getNetworkWaitLabel(uint16_t timeoutMs) const;
   std::string getFriendlyModelName() const;
@@ -37,8 +40,10 @@ class CrossFrontSetupActivity final : public UiListActivity {
   ViewMode viewMode = ViewMode::MAIN;
 
   char deviceId[32] = {0};
-  enum class SyncStatus : uint8_t { IDLE, SYNCING, SUCCESS, FAILED };
+  enum class SyncStatus : uint8_t { IDLE, SYNCING, FINISHED };
   SyncStatus syncStatus = SyncStatus::IDLE;
+  CrossFrontService::SyncStep currentSyncStep = CrossFrontService::SyncStep::CONNECTING_WIFI;
+  CrossFrontService::SyncResult lastSyncResult = CrossFrontService::SyncResult::OK;
 
   freeink::ui::ListItem rowItems[MAX_ITEM_COUNT]{};
   std::string rowValues[MAX_ITEM_COUNT]{};
