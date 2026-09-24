@@ -10,6 +10,7 @@
 #include <algorithm>
 #include <cctype>
 #include <cstddef>
+#include <cstring>
 
 #include "MappedInputManager.h"
 #include "WifiCredentialStore.h"
@@ -23,9 +24,9 @@
 namespace fui = freeink::ui;
 
 namespace {
-constexpr int QR_SIZE = 240;
-constexpr int QR_TOP_PAD = 10;
-constexpr int QR_BOTTOM_PAD = 14;
+constexpr int QR_SIZE = 216;
+constexpr int QR_PAD = 24;
+constexpr int QR_RIGHT_PAD = 36;
 constexpr char TOKEN_ALPHABET[] = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789";
 constexpr size_t TOKEN_LENGTH = 8;
 constexpr uint8_t TOKEN_RANDOM_LIMIT = 248;
@@ -125,8 +126,8 @@ int CrossFrontSetupActivity::listCount() const {
 
 int CrossFrontSetupActivity::computeQrSectionHeight() const {
   const auto& metrics = UITheme::getInstance().getMetrics();
-  // Header band + top padding + spacing + QR padding + QR + bottom padding + divider.
-  return metrics.topPadding + metrics.headerHeight + 6 + QR_TOP_PAD + QR_SIZE + QR_BOTTOM_PAD + 2;
+  // Header band + top padding + spacing + QR + bottom padding + divider.
+  return metrics.topPadding + metrics.headerHeight + 6 + QR_PAD + QR_SIZE + QR_PAD + 2;
 }
 
 const char* CrossFrontSetupActivity::headerTitle() const {
@@ -165,41 +166,35 @@ void CrossFrontSetupActivity::drawChrome() {
   const auto pageWidth = renderer.getScreenWidth();
   const auto& metrics = UITheme::getInstance().getMetrics();
   const int topY = metrics.topPadding + metrics.headerHeight + 6;
-  const int qrY = topY + QR_TOP_PAD;
+  const int qrY = topY + QR_PAD;
 
-  // 1. Right side: QR code (enlarged)
-  const int qrX = pageWidth - QR_SIZE - 40;
+  // 1. Right side: keep equal top, bottom, and right padding.
+  const int qrX = pageWidth - QR_SIZE - QR_RIGHT_PAD;
   const Rect qrBounds(qrX, qrY, QR_SIZE, QR_SIZE);
   QrUtils::drawQrCode(renderer, qrBounds, getPairingUrl());
 
-  // 2. Left side: Webapp address, Device ID, and Token
+  // 2. Left side: Device ID and token only. Keep the CF prefix out of the UI;
+  // the internal ID and pairing/API contracts remain unchanged.
   const int leftX = 40;
-  const int indentX = leftX + 24;
+  const int indentX = leftX + 16;
+  const char* displayDeviceId = (strncmp(deviceId, "CF-", 3) == 0) ? (deviceId + 3) : deviceId;
 
-  // Line 1: Web App address
-  char webBuf[128];
-  snprintf(webBuf, sizeof(webBuf), "%s  (%s)", CROSSFRONT_SETTINGS.getWebUrl(), getFriendlyModelName().c_str());
-  const int line1Y = qrY + 14;
-  renderer.drawText(UI_12_FONT_ID, leftX, line1Y, webBuf, true, EpdFontFamily::BOLD);
+  const int deviceLabelY = qrY + 14;
+  renderer.drawText(UI_10_FONT_ID, leftX, deviceLabelY, tr(STR_CROSSFRONT_DEVICE_ID), true,
+                    EpdFontFamily::REGULAR);
 
-  // Line 2: "Mã thiết bị" (normal text)
-  const int line2Y = line1Y + 36;
-  renderer.drawText(UI_10_FONT_ID, leftX, line2Y, tr(STR_CROSSFRONT_DEVICE_ID), true, EpdFontFamily::REGULAR);
+  const int deviceValueY = deviceLabelY + 24;
+  renderer.drawText(NOTOSANS_14_FONT_ID, indentX, deviceValueY, displayDeviceId, true, EpdFontFamily::BOLD);
 
-  // Line 3: <mã thiết bị> (indented, bold, larger text)
-  const int line3Y = line2Y + 22;
-  renderer.drawText(NOTOSANS_18_FONT_ID, indentX, line3Y, deviceId, true, EpdFontFamily::BOLD);
+  const int tokenLabelY = deviceValueY + 46;
+  renderer.drawText(UI_10_FONT_ID, leftX, tokenLabelY, tr(STR_CROSSFRONT_TOKEN), true, EpdFontFamily::REGULAR);
 
-  // Line 4: "Token" (normal text)
-  const int line4Y = line3Y + 40;
-  renderer.drawText(UI_10_FONT_ID, leftX, line4Y, tr(STR_CROSSFRONT_TOKEN), true, EpdFontFamily::REGULAR);
-
-  // Line 5: <token> (indented, bold, larger text)
-  const int line5Y = line4Y + 22;
-  renderer.drawText(NOTOSANS_18_FONT_ID, indentX, line5Y, CROSSFRONT_SETTINGS.deviceToken, true, EpdFontFamily::BOLD);
+  const int tokenValueY = tokenLabelY + 24;
+  renderer.drawText(NOTOSANS_14_FONT_ID, indentX, tokenValueY, CROSSFRONT_SETTINGS.deviceToken, true,
+                    EpdFontFamily::BOLD);
 
   // Divider line
-  const int dividerY = qrY + QR_SIZE + QR_BOTTOM_PAD;
+  const int dividerY = qrY + QR_SIZE + QR_PAD;
   renderer.drawLine(0, dividerY, pageWidth - 1, dividerY, true);
 }
 

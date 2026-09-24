@@ -323,6 +323,21 @@ HttpDownloader::DownloadError HttpDownloader::downloadToFile(const std::string& 
   LOG_DBG("HTTP", "Downloading: %s -> %s", url.c_str(), destPath.c_str());
 
   const std::string tempPath = destPath + ".tmp";
+  const std::string backupPath = destPath + ".bak";
+
+  // Recover a complete previous image if power was lost while replacing it.
+  if (Storage.exists(backupPath.c_str())) {
+    if (Storage.exists(destPath.c_str())) {
+      if (!Storage.remove(backupPath.c_str())) {
+        LOG_ERR("HTTP", "Failed to remove stale backup: %s", backupPath.c_str());
+        return FILE_ERROR;
+      }
+    } else if (!Storage.rename(backupPath.c_str(), destPath.c_str())) {
+      LOG_ERR("HTTP", "Failed to restore backup: %s", backupPath.c_str());
+      return FILE_ERROR;
+    }
+  }
+
   if (Storage.exists(tempPath.c_str())) {
     Storage.remove(tempPath.c_str());
   }
@@ -358,12 +373,24 @@ HttpDownloader::DownloadError HttpDownloader::downloadToFile(const std::string& 
     return HTTP_ERROR;
   }
 
-  if (Storage.exists(destPath.c_str())) {
-    Storage.remove(destPath.c_str());
+  const bool hadDestination = Storage.exists(destPath.c_str());
+  if (hadDestination && !Storage.rename(destPath.c_str(), backupPath.c_str())) {
+    LOG_ERR("HTTP", "Failed to stage existing file for replacement: %s", destPath.c_str());
+    Storage.remove(tempPath.c_str());
+    return FILE_ERROR;
   }
+
   if (!Storage.rename(tempPath.c_str(), destPath.c_str())) {
     LOG_ERR("HTTP", "Failed to rename temp file %s to %s", tempPath.c_str(), destPath.c_str());
+    if (hadDestination && !Storage.rename(backupPath.c_str(), destPath.c_str())) {
+      LOG_ERR("HTTP", "Failed to restore previous file from %s", backupPath.c_str());
+    }
+    Storage.remove(tempPath.c_str());
     return FILE_ERROR;
+  }
+
+  if (hadDestination && !Storage.remove(backupPath.c_str())) {
+    LOG_ERR("HTTP", "Failed to remove replaced backup: %s", backupPath.c_str());
   }
 
   LOG_DBG("HTTP", "Downloaded %zu bytes to %s", sink.downloaded, destPath.c_str());
