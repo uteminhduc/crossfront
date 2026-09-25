@@ -9,7 +9,7 @@ permissions:
   contents: write
 
 jobs:
-  build:
+  build-firmware:
     name: Build Firmware (${{ matrix.device }})
     runs-on: ubuntu-latest
     strategy:
@@ -18,51 +18,72 @@ jobs:
         include:
           - env: gh_release
             device: x3
-            name: crossfront-x3.bin
+            asset: crossfront-x3.bin
 
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
         with:
+          ref: ${{ github.event.release.tag_name || github.ref }}
           submodules: recursive
 
       - name: Setup Python
         uses: actions/setup-python@v5
         with:
-          python-version: '3.12'
+          python-version: '3.13'
 
-      - name: Install uv & PlatformIO Core
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          version: "latest"
+          enable-cache: false
+
+      - name: Install PlatformIO Core & ESP-IDF dependencies
         run: |
-          pip install --upgrade pip
-          pip install -U https://github.com/pioarduino/platformio-core/archive/refs/tags/v6.1.19.zip
-          pip install -U "littlefs-python>=0.16.0" "fatfs-ng>=0.1.14" "pyyaml>=6.0.2" \
-            "rich-click>=1.8.6" "zopfli>=0.2.2" "intelhex>=2.3.0" "rich>=14.0.0" "urllib3<2"
+          uv pip install --system -U https://github.com/pioarduino/platformio-core/archive/refs/tags/v6.1.19.zip
+          uv pip install --system -U "littlefs-python>=0.16.0" "fatfs-ng>=0.1.14" "pyyaml>=6.0.2" \
+            "rich-click>=1.8.6" "zopfli>=0.2.2" "intelhex>=2.3.0" "rich>=14.0.0" "urllib3<2" \
+            "cryptography>=45.0.3" "certifi>=2025.8.3" "ecdsa>=0.19.1" "bitstring>=4.3.1" \
+            "reedsolo>=1.5.3,<1.8" "esp-idf-size>=2.0.0" "esp-coredump>=1.14.0"
 
       - name: Generate i18n
         run: |
-          python scripts/gen_i18n.py
+          python scripts/gen_i18n.py lib/I18n/translations lib/I18n/
 
       - name: Build Firmware for ${{ matrix.device }}
         run: |
-          pio run -e ${{ matrix.env }}
+          CROSSPOINT_RC_HASH="$(git rev-parse --short=7 HEAD)" pio run -e ${{ matrix.env }} -j1
 
-      - name: Locate firmware binary
-        id: find-bin
+      - name: Prepare firmware asset
         run: |
-          find .pio/build/${{ matrix.env }} -type f -name "*.bin"
-          cp .pio/build/${{ matrix.env }}/firmware.bin ${{ matrix.name }} || cp .pio/build/${{ matrix.env }}/*.bin ${{ matrix.name }}
+          cp .pio/build/${{ matrix.env }}/firmware.bin ${{ matrix.asset }}
 
-      - name: Upload Artifact
+      - name: Stage firmware asset
         uses: actions/upload-artifact@v4
         with:
-          name: ${{ matrix.name }}
-          path: ${{ matrix.name }}
+          name: ${{ matrix.asset }}
+          path: ${{ matrix.asset }}
+          if-no-files-found: error
+          retention-days: 1
 
-      - name: Attach firmware asset to GitHub Release
-        if: github.event_name == 'release'
+  publish-firmware:
+    name: Attach Assets to Release
+    needs: build-firmware
+    if: github.event_name == 'release'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Download firmware assets
+        uses: actions/download-artifact@v4
+        with:
+          path: dist
+          pattern: crossfront-*.bin
+          merge-multiple: true
+
+      - name: Upload firmware to GitHub Release
         env:
           GH_TOKEN: ${{ github.token }}
           RELEASE_TAG: ${{ github.event.release.tag_name }}
         run: |
-          gh release upload "$RELEASE_TAG" "${{ matrix.name }}" --repo "$GITHUB_REPOSITORY" --clobber
-
+          gh release upload "$RELEASE_TAG" dist/crossfront-*.bin --repo "$GITHUB_REPOSITORY" --clobber
