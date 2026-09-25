@@ -1,0 +1,32 @@
+name: Sync Upstream from Crosspoint
+
+on:
+  schedule:
+    # Chạy mỗi tuần 1 lần vào thứ 2 lúc 0h UTC
+    - cron: '0 0 * * 1'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Setup Git User
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+
+      - name: Fetch and Merge Upstream
+        run: |
+          git remote add upstream https://github.com/crosspoint-reader/crosspoint-reader.git || true
+          git fetch upstream develop
+          # Merge changes from upstream develop into our branch
+          git merge upstream/develop --no-edit || (echo "Merge conflict detected! Please resolve manually" && exit 1)
+          git push origin HEAD

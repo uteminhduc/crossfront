@@ -12,6 +12,7 @@
 
 #include "ButtonRemapActivity.h"
 #include "ClearCacheActivity.h"
+#include "CrossFrontSetupActivity.h"
 #include "CrossPointSettings.h"
 #include "FontDownloadActivity.h"
 #include "KOReaderSettingsActivity.h"
@@ -30,6 +31,7 @@
 #include "components/UITheme.h"
 #include "components/UIThemeTokens.h"
 #include "components/UiAppHelpers.h"
+#include "crossfront/CrossFrontSettings.h"
 #include "fontIds.h"
 
 namespace fui = freeink::ui;
@@ -378,6 +380,16 @@ void SettingsActivity::toggleCurrentSetting() {
           LOG_ERR("SETTINGS", "OOM: KeyboardLayoutsActivity");
         }
         break;
+      case SettingAction::CrossFrontSetup:
+        if (auto activity = makeUniqueNoThrow<CrossFrontSetupActivity>(renderer, mappedInput)) {
+          startActivityForResult(std::move(activity), [this](const ActivityResult&) {
+            rebuildSettingsLists();
+            requestUpdate();
+          });
+        } else {
+          LOG_ERR("SETTINGS", "OOM: CrossFrontSetupActivity");
+        }
+        break;
       case SettingAction::None:
         // Do nothing
         break;
@@ -433,6 +445,24 @@ void SettingsActivity::openSleepTimeoutPicker() {
 }
 
 std::string SettingsActivity::settingValueText(const SettingInfo& setting) {
+  if (setting.action == SettingAction::CrossFrontSetup) {
+    switch (CROSSFRONT_SETTINGS.updateInterval) {
+      case CrossFrontSettings::ONE_MINUTE: return tr(STR_CROSSFRONT_1_MIN);
+      case CrossFrontSettings::TWO_MINUTES: return tr(STR_CROSSFRONT_2_MIN);
+      case CrossFrontSettings::FIVE_MINUTES: return tr(STR_CROSSFRONT_5_MIN);
+      case CrossFrontSettings::FIFTEEN_MINUTES: return tr(STR_CROSSFRONT_15_MIN);
+      case CrossFrontSettings::THIRTY_MINUTES: return tr(STR_CROSSFRONT_30_MIN);
+      case CrossFrontSettings::ONE_HOUR: return tr(STR_CROSSFRONT_1_HOUR);
+      case CrossFrontSettings::TWO_HOURS: return tr(STR_CROSSFRONT_2_HOURS);
+      case CrossFrontSettings::THREE_HOURS: return tr(STR_CROSSFRONT_3_HOURS);
+      case CrossFrontSettings::SIX_HOURS: return tr(STR_CROSSFRONT_6_HOURS);
+      case CrossFrontSettings::TWELVE_HOURS: return tr(STR_CROSSFRONT_12_HOURS);
+      case CrossFrontSettings::ONE_DAY: return tr(STR_CROSSFRONT_24_HOURS);
+      case CrossFrontSettings::ON_SLEEP:
+      default:
+        return tr(STR_CROSSFRONT_ON_SLEEP);
+    }
+  }
   if (setting.type == SettingType::TOGGLE && setting.valuePtr != nullptr) {
     return SETTINGS.*(setting.valuePtr) ? tr(STR_STATE_ON) : tr(STR_STATE_OFF);
   }

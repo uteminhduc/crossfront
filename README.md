@@ -1,6 +1,24 @@
-# CrossPoint Reader
+# CrossPoint Reader — CrossFront Edition
 
-[![Fund contributors](https://img.shields.io/badge/%F0%9F%91%91_Fund_contributors-royalty.dev-BB953A?style=for-the-badge&labelColor=1a1a1a)](https://app.royalty.dev/crosspoint-reader/crosspoint-reader)
+This is a custom fork of [CrossPoint Reader](https://github.com/crosspoint-reader/crosspoint-reader) enhanced with CrossFront cloud integration. Design custom sleep screens, manage devices, and sync layouts via the [CrossFront Web Studio](https://cf.pocketgo.org).
+
+### CrossFront Features
+
+- Cloud Sleep Screen: Fetch and render custom dynamic or static sleep screens from CrossFront Studio.
+- Smart Sleep Schedule: Supports quiet hours and scheduled wakeups via RTC deep sleep timer to preserve battery.
+- Fast Pairing: Easy setup with compact QR code and web pairing interface.
+- HMAC-SHA256 Security: Secure API authentication with hardware-accelerated signature verification and token rotation directly on device.
+- Offline Fallback: Preserves cached screens during network drops and displays a clean status screen when unconfigured.
+- Non-invasive Integration: Built as an independent module without modifying upstream e-reader core logic.
+
+### Downloads and Supported Versions
+
+| Base CrossPoint Version | CrossFront Version | Target Devices | Release Tag | Firmware Downloads |
+|---|---|---|---|---|
+| 1.6.5 (Release Candidate) | v1.0 | Xteink X3, X4, X4 Pro | `v1.6.5rc-cf1.0` | [Release Notes](https://github.com/uteminhduc/crossfront/releases/tag/v1.6.5rc-cf1.0) / [X3-X4 .bin](https://github.com/uteminhduc/crossfront/releases/download/v1.6.5rc-cf1.0/crossfront-x3-x4.bin) / [X4 Pro .bin](https://github.com/uteminhduc/crossfront/releases/download/v1.6.5rc-cf1.0/crossfront-x4pro.bin) |
+| 1.6.0 (Official Stable) | v1.0 | Xteink X3, X4, X4 Pro | `v1.6.0-cf1.0` | [Release Notes](https://github.com/uteminhduc/crossfront/releases/tag/v1.6.0-cf1.0) / [X3-X4 .bin](https://github.com/uteminhduc/crossfront/releases/download/v1.6.0-cf1.0/crossfront-x3-x4.bin) / [X4 Pro .bin](https://github.com/uteminhduc/crossfront/releases/download/v1.6.0-cf1.0/crossfront-x4pro.bin) |
+
+---
 
 CrossPoint is open-source e-reader firmware - community-built, fully hackable, free forever. It's maintained by a growing community of developers and readers who believe your device should do what you want - not what a manufacturer decided for you.
 
@@ -30,7 +48,7 @@ Check [our Devices page](https://crosspointreader.com/devices) for the full list
 
 - **USB Drive mode (X4Pro)**: access the SD card as USB mass storage.
 
-- **Library workflow**: folder browser, hidden-file toggle, long-press delete, recent books, SD-cache management.
+- **Library workflow**: indexed title/author search, recently-added and alphabetical views, multilingual grouping, folder browser, recent books, and SD-cache management.
 
 - **Wireless workflows**:
   

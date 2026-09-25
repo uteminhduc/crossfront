@@ -3,6 +3,8 @@
 
 #include <functional>
 #include <string>
+#include <utility>
+#include <vector>
 
 /**
  * HTTP client utility for fetching content and downloading files. Built on
@@ -21,6 +23,7 @@ class HttpDownloader {
     HTTP_ERROR,
     FILE_ERROR,
     ABORTED,
+    NOT_MODIFIED,
   };
 
   // Pre-flight floor for starting a TLS transfer. Below this the session or
@@ -34,7 +37,7 @@ class HttpDownloader {
    * Fetch text content from a URL with optional credentials.
    */
   static bool fetchUrl(const std::string& url, std::string& outContent, const std::string& username = "",
-                       const std::string& password = "");
+                       const std::string& password = "", int timeoutMs = 60000);
 
   static bool fetchUrl(const std::string& url, Stream& stream, const std::string& username = "",
                        const std::string& password = "");
@@ -43,7 +46,7 @@ class HttpDownloader {
    * Stream the response body to onData as it arrives, without buffering it.
    */
   static bool fetchUrl(const std::string& url, const DataCallback& onData, const std::string& username = "",
-                       const std::string& password = "");
+                       const std::string& password = "", int timeoutMs = 60000);
 
   /**
    * Download a file to the SD card with optional credentials.
@@ -55,5 +58,8 @@ class HttpDownloader {
   static DownloadError downloadToFile(const std::string& url, const std::string& destPath,
                                       ProgressCallback progress = nullptr, bool* cancelFlag = nullptr,
                                       const std::string& username = "", const std::string& password = "",
-                                      bool downgradeRedirectsToHttp = false);
+                                      bool downgradeRedirectsToHttp = false, int timeoutMs = 60000,
+                                      const std::string& ifNoneMatch = "", std::string* responseEtag = nullptr,
+                                      const std::vector<std::pair<std::string, std::string>>& extraHeaders = {},
+                                      uint32_t* responsePollInterval = nullptr);
 };

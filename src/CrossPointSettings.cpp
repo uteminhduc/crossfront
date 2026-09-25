@@ -44,7 +44,6 @@ void CrossPointSettings::validateFrontButtonMapping(CrossPointSettings& settings
     }
   }
 }
-
 uint8_t CrossPointSettings::sleepTimeoutEnumToMinutes(const uint8_t legacyValue) {
   switch (legacyValue) {
     case SLEEP_1_MIN:
@@ -60,7 +59,6 @@ uint8_t CrossPointSettings::sleepTimeoutEnumToMinutes(const uint8_t legacyValue)
       return 10;
   }
 }
-
 void CrossPointSettings::toJson(JsonDocument& doc) const {
   const CrossPointSettings& s = *this;
 

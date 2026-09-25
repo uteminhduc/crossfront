@@ -25,6 +25,8 @@
 #include "CrossPointState.h"
 #include "activities/reader/ReaderUtils.h"
 #include "components/UITheme.h"
+#include "crossfront/CrossFrontService.h"
+#include "crossfront/CrossFrontSettings.h"
 #include "fontIds.h"
 #include "images/Logo120.h"
 #include "images/MoonIcon.h"
@@ -544,6 +546,8 @@ void SleepActivity::onEnter() {
       } else {
         return renderCustomSleepScreen();
       }
+    case (CrossPointSettings::SLEEP_SCREEN_MODE::CROSSFRONT):
+      return renderCrossFrontSleepScreen();
     default:
       return renderDefaultSleepScreen();
   }
@@ -841,4 +845,30 @@ void SleepActivity::renderLastScreenSleepScreen() const {
 void SleepActivity::renderBlankSleepScreen() const {
   renderer.clearScreen();
   renderer.displayBuffer(HalDisplay::HALF_REFRESH);
+}
+
+void SleepActivity::renderCrossFrontFallbackScreen() const {
+  const auto pageHeight = renderer.getScreenHeight();
+
+  renderer.clearScreen();
+
+  // Title: "No sleep screen configured"
+  const int titleY = pageHeight / 2 - 24;
+  renderer.drawCenteredText(UI_12_FONT_ID, titleY, tr(STR_CROSSFRONT_NO_IMAGE_YET), true, EpdFontFamily::BOLD);
+
+  // Hint line: "Design your screen at:"
+  const int hintY = titleY + 30;
+  renderer.drawCenteredText(SMALL_FONT_ID, hintY, tr(STR_CROSSFRONT_DESIGN_HINT));
+
+  // Web URL
+  const int urlY = hintY + 22;
+  renderer.drawCenteredText(SMALL_FONT_ID, urlY, CROSSFRONT_SETTINGS.getWebUrl());
+
+  renderer.displayBuffer(HalDisplay::HALF_REFRESH);
+}
+
+void SleepActivity::renderCrossFrontSleepScreen() const {
+  if (!CrossFrontService::renderSleepScreen(renderer)) {
+    renderCrossFrontFallbackScreen();
+  }
 }

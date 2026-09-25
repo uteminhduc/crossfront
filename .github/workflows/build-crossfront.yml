@@ -1,0 +1,71 @@
+name: Build CrossFront Firmware
+
+on:
+  workflow_dispatch:
+  release:
+    types: [published]
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    name: Build Firmware (${{ matrix.device }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - env: gh_release
+            device: x3-x4
+            name: crossfront-x3-x4.bin
+          - env: x4pro-gh_release
+            device: x4pro
+            name: crossfront-x4pro.bin
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install uv & PlatformIO Core
+        run: |
+          pip install --upgrade pip
+          pip install -U https://github.com/pioarduino/platformio-core/archive/refs/tags/v6.1.19.zip
+          pip install -U "littlefs-python>=0.16.0" "fatfs-ng>=0.1.14" "pyyaml>=6.0.2" \
+            "rich-click>=1.8.6" "zopfli>=0.2.2" "intelhex>=2.3.0" "rich>=14.0.0" "urllib3<2"
+
+      - name: Generate i18n
+        run: |
+          python scripts/gen_i18n.py
+
+      - name: Build Firmware for ${{ matrix.device }}
+        run: |
+          pio run -e ${{ matrix.env }}
+
+      - name: Locate firmware binary
+        id: find-bin
+        run: |
+          find .pio/build/${{ matrix.env }} -type f -name "*.bin"
+          cp .pio/build/${{ matrix.env }}/firmware.bin ${{ matrix.name }} || cp .pio/build/${{ matrix.env }}/*.bin ${{ matrix.name }}
+
+      - name: Upload Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.name }}
+          path: ${{ matrix.name }}
+
+      - name: Attach firmware asset to GitHub Release
+        if: github.event_name == 'release'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ github.event.release.tag_name }}
+        run: |
+          gh release upload "$RELEASE_TAG" "${{ matrix.name }}" --repo "$GITHUB_REPOSITORY" --clobber
+
