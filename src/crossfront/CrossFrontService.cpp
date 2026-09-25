@@ -22,24 +22,9 @@
 
 namespace {
 std::vector<std::pair<std::string, std::string>> makeCrossFrontHeaders(const char* deviceId, const char* token) {
-  time_t now = time(nullptr);
-  const uint32_t timestamp = (now > 1700000000) ? static_cast<uint32_t>(now) : 0;
-
-  const uint32_t r1 = esp_random();
-  const uint32_t r2 = esp_random();
-  char nonce[17] = {0};
-  snprintf(nonce, sizeof(nonce), "%08lx%08lx", static_cast<unsigned long>(r1), static_cast<unsigned long>(r2));
-
-  const std::string secret = (token && token[0] != '\0') ? token : deviceId;
-  const std::string message = std::string(deviceId) + "\n" + std::to_string(timestamp) + "\n" + nonce;
-  const std::string signature = crossfront::computeHmacSha256(secret, message);
-
   std::vector<std::pair<std::string, std::string>> headers;
-  headers.reserve(5);
+  headers.reserve(2);
   headers.emplace_back("X-Device-Id", deviceId);
-  headers.emplace_back("X-Timestamp", std::to_string(timestamp));
-  headers.emplace_back("X-Nonce", nonce);
-  headers.emplace_back("X-Signature", signature);
   if (token && token[0] != '\0') {
     headers.emplace_back("X-Device-Token", token);
   }
