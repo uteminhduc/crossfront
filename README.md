@@ -1,6 +1,28 @@
-# CrossPoint Reader
+# CrossPoint Reader — CrossFront Edition
 
-[![Fund contributors](https://img.shields.io/badge/%F0%9F%91%91_Fund_contributors-royalty.dev-BB953A?style=for-the-badge&labelColor=1a1a1a)](https://app.royalty.dev/crosspoint-reader/crosspoint-reader)
+This is a custom fork of [CrossPoint Reader](https://github.com/crosspoint-reader/crosspoint-reader) enhanced with CrossFront cloud integration. Design custom sleep screens, manage devices, and sync layouts via the [CrossFront Web Studio](https://cf.pocketgo.org).
+
+### CrossFront Features
+
+- Cloud Sleep Screen: Fetch and render custom dynamic or static sleep screens from CrossFront Studio.
+- Smart Sleep Schedule: Supports quiet hours and scheduled wakeups via RTC deep sleep timer to preserve battery.
+- Fast Pairing: Easy setup with compact QR code and web pairing interface.
+- HMAC-SHA256 Security: Secure API authentication with hardware-accelerated signature verification and token rotation directly on device.
+- Offline Fallback: Preserves cached screens during network drops and displays a clean status screen when unconfigured.
+- Non-invasive Integration: Built as an independent module without modifying upstream e-reader core logic.
+
+### Downloads and Supported Devices
+
+Currently, CrossFront firmware is only tested and officially supported on **Xteink X3 (Global / International Edition)**. Xteink X4 and X4 Pro have not been tested due to lack of test devices and are marked as not supported yet.
+
+| Device | Firmware Version | Release Tag | Download Binary | Status and Notes |
+|---|---|---|---|---|
+| **Xteink X3** | CrossPoint 1.6.5rc + CF v1.0 | `v1.6.5rc-cf1.0` | [crossfront-x3.bin](https://github.com/uteminhduc/crossfront/releases/download/v1.6.5rc-cf1.0/crossfront-x3.bin) | Supported. Fully tested on Xteink X3 (Global / International Edition) with DS3231 RTC. Supports timed sleep wakeup and quiet hours. |
+| | CrossPoint 1.6.0 + CF v1.0 | `v1.6.0-cf1.0` | [crossfront-x3.bin](https://github.com/uteminhduc/crossfront/releases/download/v1.6.0-cf1.0/crossfront-x3.bin) | Supported. Official stable base, fully tested on Xteink X3 (Global / International Edition). |
+| **Xteink X4** | — | — | — | Not supported yet (untested due to lack of hardware device). |
+| **Xteink X4 Pro** | — | — | — | Not supported yet (untested due to lack of hardware device). |
+
+---
 
 CrossPoint is open-source e-reader firmware - community-built, fully hackable, free forever. It's maintained by a growing community of developers and readers who believe your device should do what you want - not what a manufacturer decided for you.
 

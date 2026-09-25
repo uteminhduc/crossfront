@@ -17,11 +17,8 @@ jobs:
       matrix:
         include:
           - env: gh_release
-            device: x3-x4
-            name: crossfront-x3-x4.bin
-          - env: x4pro-gh_release
-            device: x4pro
-            name: crossfront-x4pro.bin
+            device: x3
+            name: crossfront-x3.bin
 
     steps:
       - name: Checkout repository
@@ -60,3 +57,12 @@ jobs:
         with:
           name: ${{ matrix.name }}
           path: ${{ matrix.name }}
+
+      - name: Attach firmware asset to GitHub Release
+        if: github.event_name == 'release'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ github.event.release.tag_name }}
+        run: |
+          gh release upload "$RELEASE_TAG" "${{ matrix.name }}" --repo "$GITHUB_REPOSITORY" --clobber
+
