@@ -22,8 +22,8 @@ Xteink X3 and X4 share the same ESP32-C3 firmware binary. X4 does not have an RT
 
 | CrossPoint Base | Xteink X3 (Global) | Xteink X4 | Download Binary (X3 & X4) | Note |
 |---|---|---|---|---|
-| **1.6.5rc** | Tested | Untested | [crossfront-x3-x4-cp1.6.5rc.bin](https://github.com/uteminhduc/crossfront/releases/download/v1.0/crossfront-x3-x4-cp1.6.5rc.bin) | X4 lacks RTC chip; scheduled sleep wakeup not available |
-| **1.6.0** (Stable) | Tested | Untested | [crossfront-x3-x4-cp1.6.0.bin](https://github.com/uteminhduc/crossfront/releases/download/v1.0/crossfront-x3-x4-cp1.6.0.bin) | X4 lacks RTC chip; scheduled sleep wakeup not available |
+| **1.6.5rc** | Tested | Untested | [crosspoint-1.6.5rc-x3-x4-cf1.0.bin](https://github.com/uteminhduc/crossfront/releases/download/v1.0/crosspoint-1.6.5rc-x3-x4-cf1.0.bin) | X4 lacks RTC chip; scheduled sleep wakeup not available |
+| **1.6.0** (Stable) | Tested | Untested | [crosspoint-1.6.0-x3-x4-cf1.0.bin](https://github.com/uteminhduc/crossfront/releases/download/v1.0/crosspoint-1.6.0-x3-x4-cf1.0.bin) | X4 lacks RTC chip; scheduled sleep wakeup not available |
 
 > Note: Xteink X4 Pro (ESP32-S3) is currently not supported.
 
