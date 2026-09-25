@@ -5,27 +5,43 @@ This is a custom fork of [CrossPoint Reader](https://github.com/crosspoint-reade
 ### Key Features / Tính Năng Nổi Bật
 
 **English**:
-- **Cloud Sleep Screen**: Custom dynamic or static sleep screens designed and synced from CrossFront Studio.
-- **Smart Wakeup Schedule (X3)**: Automated scheduled screen updates and quiet hours to optimize battery life.
-- **Fast QR Pairing**: Instant device setup via on-screen QR code.
+
+- **Dynamic Sleep Screens**: Create animated sleep screens in CrossFront Web Studio and sync them to your device over Wi-Fi.
+- **Automatic Wi-Fi Sync**: Sync new screens without manually entering settings on the device.
+- **Smart Wakeup Schedule (X3 only)**: Schedule automatic screen updates and quiet hours to save battery. This is not available on the X4 when running on battery.
 
 **Tiếng Việt**:
-- **Màn hình nghỉ từ Cloud**: Tự tạo và đồng bộ màn hình nghỉ động hoặc tĩnh từ CrossFront Web Studio.
-- **Lịch thức thông minh (X3)**: Tự động cập nhật màn hình theo lịch hẹn giờ và tiết kiệm pin trong khung giờ nghỉ.
-- **Kết nối nhanh bằng QR**: Ghép nối thiết bị với tài khoản cá nhân trong vài giây qua mã QR trên màn hình.
+
+- **Màn hình chờ động**: Tự tạo màn hình chờ động trên CrossFront Web Studio và đồng bộ với thiết bị qua Wi-Fi.
+- **Đồng bộ Wi-Fi tự động**: Đồng bộ màn hình mới mà không cần nhập thủ công cài đặt trên thiết bị.
+- **Lịch thức thông minh (chỉ X3)**: Tự động cập nhật màn hình theo lịch và thiết lập giờ nghỉ để tiết kiệm pin. Tính năng này không dùng được trên X4 khi chạy bằng pin.
 
 ### Downloads and Supported Devices
 
-Xteink X3 and X4 share the same ESP32-C3 firmware binary. X4 does not have an RTC chip, so scheduled sleep wakeups are not supported on battery.
+CrossFront v1.0 provides an ESP32-C3 binary for **Xteink X3 Global and Xteink X4**. X4 has no RTC, so scheduled wakeup is not available on battery. Domestic/China editions are USB-locked by default, and Xteink X4 Pro (ESP32-S3) is not supported yet.
 
-#### CrossFront v1.0 (Release Tag: [`v1.0`](https://github.com/uteminhduc/crossfront/releases/tag/v1.0))
+> [!CAUTION]
+> **WARNING / CẢNH BÁO — READ BEFORE INSTALLING / ĐỌC TRƯỚC KHI CÀI**
+>
+> **English:** CrossFront is provided as-is. Install firmware at your own risk. We are not responsible for a bricked, damaged, data-lost, or unusable device caused by choosing the wrong file, interrupting the flash process, or ignoring these instructions.
+>
+> **Tiếng Việt:** CrossFront được cung cấp nguyên trạng. Bạn tự chịu mọi rủi ro khi cài đặt firmware. Chúng tôi từ chối trách nhiệm đối với máy bị brick, hư hỏng, mất dữ liệu hoặc không sử dụng được do chọn sai file, làm gián đoạn quá trình cài đặt hoặc bỏ qua hướng dẫn.
 
-| CrossPoint Base | Xteink X3 (Global) | Xteink X4 | Download Binary (X3 & X4) | Note |
-|---|---|---|---|---|
-| **1.6.5rc** | Tested | Untested | [crosspoint-1.6.5rc-x3-x4-cf1.0.bin](https://github.com/uteminhduc/crossfront/releases/download/v1.0/crosspoint-1.6.5rc-x3-x4-cf1.0.bin) | X4 lacks RTC chip; scheduled sleep wakeup not available |
-| **1.6.0** (Stable) | Tested | Untested | [crosspoint-1.6.0-x3-x4-cf1.0.bin](https://github.com/uteminhduc/crossfront/releases/download/v1.0/crosspoint-1.6.0-x3-x4-cf1.0.bin) | X4 lacks RTC chip; scheduled sleep wakeup not available |
+#### CrossFront v1.0 — [Release page](https://github.com/uteminhduc/crossfront/releases/tag/v1.0)
 
-> Note: Xteink X4 Pro (ESP32-S3) is currently not supported.
+The files below work on **Xteink X3 Global and Xteink X4** because both use the same ESP32-C3 binary:
+
+Only the CrossPoint base versions listed below are packaged for CrossFront v1.0.
+
+- **CrossPoint 1.6.5rc** — X3 Global (tested) / X4 (untested): [Download `crosspoint-1.6.5rc-x3-x4-cf1.0.bin`](https://github.com/uteminhduc/crossfront/releases/download/v1.0/crosspoint-1.6.5rc-x3-x4-cf1.0.bin)
+- **CrossPoint 1.6.0 Stable** — X3 Global (tested) / X4 (untested): [Download `crosspoint-1.6.0-x3-x4-cf1.0.bin`](https://github.com/uteminhduc/crossfront/releases/download/v1.0/crosspoint-1.6.0-x3-x4-cf1.0.bin)
+
+> [!CAUTION]
+> **WARNING / CẢNH BÁO — VERIFY BEFORE FLASHING / KIỂM TRA TRƯỚC KHI CÀI**
+>
+> **English:** CrossFront is provided as-is. We are not responsible for a bricked, damaged, data-lost, or unusable device caused by installing the wrong firmware or using an unsupported device. Check your model, region, CrossPoint version, and file name before flashing.
+>
+> **Tiếng Việt:** CrossFront được cung cấp nguyên trạng. Chúng tôi từ chối trách nhiệm đối với máy bị brick, hư hỏng, mất dữ liệu hoặc không sử dụng được do cài sai firmware hoặc dùng thiết bị không được hỗ trợ. Hãy kiểm tra model, khu vực, phiên bản CrossPoint và tên file trước khi cài.
 
 ---
 
@@ -89,11 +105,11 @@ Check [our Devices page](https://crosspointreader.com/devices) for the full list
 
 ## USB-locked devices (Xteink Unlocker)
 
-Some Xteink units purchased from third-party stores (e.g. AliExpress) ship with USB flashing locked from the factory.
+Domestic (China) editions and some Xteink units purchased from third-party stores (e.g. AliExpress) ship with USB flashing locked from the factory.
 If your device is locked, you will need to use the **Xteink Unlocker** tool available at
 https://crosspointreader.com/#unlock-tool before you can flash CrossPoint.
 
-**You do not need this tool if you bought your device directly from xteink.com.** Those units are not locked.
+**Global units bought directly from xteink.com generally do not need this tool.** Domestic editions remain USB-locked unless they have been officially unlocked.
 
 **Not sure if your device is locked?** Power it on, connect the USB-C cable, and try flashing via the web flasher first (see
 [Install firmware](#install-firmware) below). If the browser's serial device picker does not show your device, try a different
