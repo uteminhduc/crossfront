@@ -2,25 +2,26 @@
 
 This is a custom fork of [CrossPoint Reader](https://github.com/crosspoint-reader/crosspoint-reader) enhanced with CrossFront cloud integration. Design custom sleep screens, manage devices, and sync layouts via the [CrossFront Web Studio](https://cf.pocketgo.org).
 
-### CrossFront Features
+### Key Features / Tính Năng Nổi Bật
 
-- Cloud Sleep Screen: Fetch and render custom dynamic or static sleep screens from CrossFront Studio.
-- Smart Sleep Schedule: Supports quiet hours and scheduled wakeups via RTC deep sleep timer to preserve battery.
-- Fast Pairing: Easy setup with compact QR code and web pairing interface.
-- HMAC-SHA256 Security: Secure API authentication with hardware-accelerated signature verification and token rotation directly on device.
-- Offline Fallback: Preserves cached screens during network drops and displays a clean status screen when unconfigured.
-- Non-invasive Integration: Built as an independent module without modifying upstream e-reader core logic.
+**English**:
+- **Cloud Sleep Screen**: Custom dynamic or static sleep screens designed and synced from CrossFront Studio.
+- **Smart Wakeup Schedule (X3)**: Automated scheduled screen updates and quiet hours to optimize battery life.
+- **Fast QR Pairing**: Instant device setup via on-screen QR code.
+
+**Tiếng Việt**:
+- **Màn hình nghỉ từ Cloud**: Tự tạo và đồng bộ màn hình nghỉ động hoặc tĩnh từ CrossFront Web Studio.
+- **Lịch thức thông minh (X3)**: Tự động cập nhật màn hình theo lịch hẹn giờ và tiết kiệm pin trong khung giờ nghỉ.
+- **Kết nối nhanh bằng QR**: Ghép nối thiết bị với tài khoản cá nhân trong vài giây qua mã QR trên màn hình.
 
 ### Downloads and Supported Devices
 
-Currently, CrossFront firmware is only tested and officially supported on **Xteink X3 (Global / International Edition)**. Xteink X4 and X4 Pro have not been tested due to lack of test devices and are marked as not supported yet.
+Xteink X3 and X4 share the same ESP32-C3 firmware binary. X4 does not have an RTC chip, so scheduled sleep wakeups are not supported on battery.
 
-| Device | Firmware Version | Release Tag | Download Binary | Status and Notes |
-|---|---|---|---|---|
-| **Xteink X3** | CrossPoint 1.6.5rc + CF v1.0 | `v1.0` | [crossfront-x3-cp1.6.5rc.bin](https://github.com/uteminhduc/crossfront/releases/download/v1.0/crossfront-x3-cp1.6.5rc.bin) | Supported. Tested on Xteink X3 (Global / International Edition) with DS3231 RTC. Supports timed sleep wakeup and quiet hours. |
-| | CrossPoint 1.6.0 + CF v1.0 | `v1.0` | [crossfront-x3-cp1.6.0.bin](https://github.com/uteminhduc/crossfront/releases/download/v1.0/crossfront-x3-cp1.6.0.bin) | Supported. Official stable base, tested on Xteink X3 (Global / International Edition). |
-| **Xteink X4** | — | — | — | Not supported yet (untested due to lack of hardware device). |
-| **Xteink X4 Pro** | — | — | — | Not supported yet (untested due to lack of hardware device). |
+| CrossPoint Base | CrossFront | Xteink X3 | Xteink X4 | Xteink X4 Pro | Download (X3 & X4) | Note |
+|---|---|---|---|---|---|---|
+| **1.6.5rc** | `v1.0` | Tested (Global) | Untested | Not supported | [crossfront-x3-x4-cp1.6.5rc.bin](https://github.com/uteminhduc/crossfront/releases/download/v1.0/crossfront-x3-x4-cp1.6.5rc.bin) | X4 lacks RTC chip; scheduled sleep wakeup not available |
+| **1.6.0** (Stable) | `v1.0` | Tested (Global) | Untested | Not supported | [crossfront-x3-x4-cp1.6.0.bin](https://github.com/uteminhduc/crossfront/releases/download/v1.0/crossfront-x3-cp1.6.0.bin) | X4 lacks RTC chip; scheduled sleep wakeup not available |
 
 ---
 
