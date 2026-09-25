@@ -17,8 +17,8 @@ Currently, CrossFront firmware is only tested and officially supported on **Xtei
 
 | Device | Firmware Version | Release Tag | Download Binary | Status and Notes |
 |---|---|---|---|---|
-| **Xteink X3** | CrossPoint 1.6.5rc + CF v1.0 | `v1.6.5rc-cf1.0` | [crossfront-x3.bin](https://github.com/uteminhduc/crossfront/releases/download/v1.6.5rc-cf1.0/crossfront-x3.bin) | Supported. Fully tested on Xteink X3 (Global / International Edition) with DS3231 RTC. Supports timed sleep wakeup and quiet hours. |
-| | CrossPoint 1.6.0 + CF v1.0 | `v1.6.0-cf1.0` | [crossfront-x3.bin](https://github.com/uteminhduc/crossfront/releases/download/v1.6.0-cf1.0/crossfront-x3.bin) | Supported. Official stable base, fully tested on Xteink X3 (Global / International Edition). |
+| **Xteink X3** | CrossPoint 1.6.5rc + CF v1.0 | `v1.0` | [crossfront-x3-cp1.6.5rc.bin](https://github.com/uteminhduc/crossfront/releases/download/v1.0/crossfront-x3-cp1.6.5rc.bin) | Supported. Tested on Xteink X3 (Global / International Edition) with DS3231 RTC. Supports timed sleep wakeup and quiet hours. |
+| | CrossPoint 1.6.0 + CF v1.0 | `v1.0` | [crossfront-x3-cp1.6.0.bin](https://github.com/uteminhduc/crossfront/releases/download/v1.0/crossfront-x3-cp1.6.0.bin) | Supported. Official stable base, tested on Xteink X3 (Global / International Edition). |
 | **Xteink X4** | — | — | — | Not supported yet (untested due to lack of hardware device). |
 | **Xteink X4 Pro** | — | — | — | Not supported yet (untested due to lack of hardware device). |
 
