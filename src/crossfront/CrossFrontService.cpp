@@ -18,6 +18,7 @@
 #include "crossfront/CrossFrontCrypto.h"
 #include "crossfront/CrossFrontSettings.h"
 #include "network/HttpDownloader.h"
+#include <SecureHttpClient.h>
 
 namespace {
 std::vector<std::pair<std::string, std::string>> makeCrossFrontHeaders(const char* deviceId, const char* token) {
@@ -70,8 +71,16 @@ void CrossFrontService::saveEtag(const std::string& etag) {
   }
 }
 
-bool CrossFrontService::connectWifiQuick(unsigned long timeoutMs) {
+static std::string lastSyncedWifiSsid = "";
+
+const std::string& CrossFrontService::getLastSyncedWifi() {
+  return lastSyncedWifiSsid;
+}
+
+bool CrossFrontService::connectWifiQuick(unsigned long timeoutMs, ProgressFn onProgress, void* userData) {
   if (WiFi.status() == WL_CONNECTED) {
+    auto& store = WifiCredentialStore::getInstance();
+    lastSyncedWifiSsid = store.getLastConnectedSsid();
     return true;
   }
 
@@ -120,6 +129,9 @@ bool CrossFrontService::connectWifiQuick(unsigned long timeoutMs) {
     const auto& credential = candidates[index];
     LOG_DBG("CF", "Trying saved Wi-Fi %u/%u: %s (%lums)", static_cast<unsigned>(index + 1),
             static_cast<unsigned>(candidates.size()), credential.ssid.c_str(), attemptTimeout);
+    if (onProgress) {
+      onProgress(SyncStep::CONNECTING_WIFI, credential.ssid.c_str(), userData);
+    }
     WiFi.disconnect(true, false);
     delay(75);
     WiFi.mode(WIFI_STA);
@@ -134,6 +146,7 @@ bool CrossFrontService::connectWifiQuick(unsigned long timeoutMs) {
 
     if (WiFi.status() == WL_CONNECTED) {
       store.setLastConnectedSsid(credential.ssid);
+      lastSyncedWifiSsid = credential.ssid;
       LOG_DBG("CF", "Connected to saved Wi-Fi: %s", credential.ssid.c_str());
       return true;
     }
@@ -184,7 +197,8 @@ bool CrossFrontService::fetchSleepImageConditional(unsigned long maxBudgetMs) {
   int httpTimeout = (elapsed < maxBudgetMs) ? static_cast<int>(maxBudgetMs - elapsed) : 0;
   bool hasNewImage = false;
   if (httpTimeout >= 1000) {
-    std::string url = server + "/api/cf/device/" + token + "/sleep.bmp";
+    const char* cleanId = (strncmp(deviceId, "CF-", 3) == 0) ? (deviceId + 3) : deviceId;
+    std::string url = server + "/api/cf/device/" + cleanId + "/sleep.bmp";
     LOG_INF("CF", "Conditional fetch from %s (etag: %s, timeout: %dms)", url.c_str(), savedEtag.c_str(), httpTimeout);
 
     std::string responseEtag;
@@ -208,7 +222,13 @@ bool CrossFrontService::fetchSleepImageConditional(unsigned long maxBudgetMs) {
     } else if (err == HttpDownloader::DownloadError::NOT_MODIFIED) {
       LOG_INF("CF", "Image not modified (304), preserving cached image");
     } else {
-      LOG_DBG("CF", "Fetch failed/timeout (%d), using cached image", static_cast<int>(err));
+      // WiFi connected but server rejected the request (device deleted/blocked
+      // returns 4xx). Clear the cache so the fallback screen is shown.
+      // No-WiFi and timeout cases return early above, so reaching here means
+      // the server was reachable.
+      LOG_INF("CF", "Server rejected request, clearing cached image");
+      Storage.remove(SLEEP_BMP_PATH);
+      Storage.remove(ETAG_FILE_PATH);
     }
   } else {
     LOG_DBG("CF", "Not enough budget left for image fetch (%dms)", httpTimeout);
@@ -220,6 +240,10 @@ bool CrossFrontService::fetchSleepImageConditional(unsigned long maxBudgetMs) {
 
 bool CrossFrontService::handleTimerWakeup(HalDisplay& display, GfxRenderer& renderer) {
   LOG_INF("CF", "Handling CrossFront timer wakeup");
+  if (!Storage.ready() && !Storage.begin()) {
+    LOG_ERR("CF", "handleTimerWakeup: Failed to initialize storage");
+    return false;
+  }
   CROSSFRONT_SETTINGS.loadFromFile();
   SETTINGS.loadFromFile();
 
@@ -241,6 +265,7 @@ bool CrossFrontService::handleTimerWakeup(HalDisplay& display, GfxRenderer& rend
         renderer.drawBitmap(bitmap, 0, 0, renderer.getScreenWidth(), renderer.getScreenHeight());
         renderer.displayBuffer(HalDisplay::HALF_REFRESH);
       }
+      file.close();
       display.deepSleep();
     }
   } else {
@@ -285,6 +310,7 @@ void CrossFrontService::armSleepTimer() {
 
 CrossFrontService::SyncResult CrossFrontService::syncNow(ProgressFn onProgress, void* userData,
                                                     unsigned long timeoutMs) {
+  lastSyncedWifiSsid = "";
   CROSSFRONT_SETTINGS.loadFromFile();
   auto& store = WifiCredentialStore::getInstance();
   store.loadFromFile();
@@ -301,17 +327,13 @@ CrossFrontService::SyncResult CrossFrontService::syncNow(ProgressFn onProgress, 
     return static_cast<long>(totalBudgetMs) - static_cast<long>(millis() - startTime);
   };
 
-  if (onProgress) {
-    onProgress(SyncStep::CONNECTING_WIFI, userData);
-  }
-
   constexpr unsigned long minHttpReserveMs = 2000;
   if (totalBudgetMs <= minHttpReserveMs) {
     return SyncResult::TIMEOUT;
   }
   const unsigned long wifiBudgetMs = totalBudgetMs - minHttpReserveMs;
 
-  if (!connectWifiQuick(wifiBudgetMs)) {
+  if (!connectWifiQuick(wifiBudgetMs, onProgress, userData)) {
     disconnectWifi();
     if (getRemainingMs() <= 0) {
       LOG_ERR("CF", "syncNow: Timed out during Wi-Fi connect");
@@ -333,7 +355,7 @@ CrossFrontService::SyncResult CrossFrontService::syncNow(ProgressFn onProgress, 
 
   // 1. Fetch config and update Wi-Fi credentials from web studio
   if (onProgress) {
-    onProgress(SyncStep::FETCHING_CONFIG, userData);
+    onProgress(SyncStep::FETCHING_CONFIG, lastSyncedWifiSsid.c_str(), userData);
   }
 
   const long configRemainingMs = getRemainingMs();
@@ -343,57 +365,78 @@ CrossFrontService::SyncResult CrossFrontService::syncNow(ProgressFn onProgress, 
     return SyncResult::TIMEOUT;
   }
 
-  std::string configUrl = server + "/api/cf/device/" + token + "/config";
+  const char* cleanId = (strncmp(deviceId, "CF-", 3) == 0) ? (deviceId + 3) : deviceId;
+  std::string configUrl = server + "/api/cf/device/" + cleanId + "/config";
   std::string jsonBody;
   bool configOk = false;
-  if (HttpDownloader::fetchUrl(configUrl, jsonBody, "", "", static_cast<int>(configRemainingMs))) {
-    JsonDocument doc;
-    if (deserializeJson(doc, jsonBody) == DeserializationError::Ok) {
-      configOk = true;
-      if (doc["wifi_list"].is<JsonArray>()) {
-        bool added = false;
-        for (JsonObject net : doc["wifi_list"].as<JsonArray>()) {
-          const char* ssid = net["ssid"];
-          const char* pass = net["password"] | "";
-          if (ssid && strlen(ssid) > 0) {
-            store.addCredential(ssid, pass);
-            added = true;
+  freeink::SecureHttpClient http;
+  http.setTimeout(static_cast<int>(configRemainingMs));
+  http.setInsecure();
+  if (http.begin(configUrl)) {
+    http.setUserAgent("CrossPoint-ESP32");
+    auto extraHeaders = makeCrossFrontHeaders(deviceId, token);
+    for (const auto& h : extraHeaders) {
+      http.addHeader(h.first.c_str(), h.second.c_str());
+    }
+    const int httpCode = http.GET([&jsonBody](const uint8_t* data, size_t len) {
+      jsonBody.append(reinterpret_cast<const char*>(data), len);
+      return true;
+    });
+    http.end();
+    if (httpCode == 404 || httpCode == 401) {
+      disconnectWifi();
+      LOG_ERR("CF", "syncNow: Device not paired on server (HTTP %d)", httpCode);
+      return SyncResult::NOT_PAIRED;
+    }
+    if (httpCode == 200) {
+      JsonDocument doc;
+      if (deserializeJson(doc, jsonBody) == DeserializationError::Ok) {
+        configOk = true;
+        if (doc["wifi_list"].is<JsonArray>()) {
+          bool added = false;
+          for (JsonObject net : doc["wifi_list"].as<JsonArray>()) {
+            const char* ssid = net["ssid"];
+            const char* pass = net["password"] | "";
+            if (ssid && strlen(ssid) > 0) {
+              store.addCredential(ssid, pass);
+              added = true;
+            }
+          }
+          if (added) {
+            store.saveToFile();
+            LOG_INF("CF", "Wi-Fi list updated from CrossFront Web App");
           }
         }
-        if (added) {
-          store.saveToFile();
-          LOG_INF("CF", "Wi-Fi list updated from CrossFront Web App");
+
+        if (doc["interval"].is<const char*>()) {
+          const char* intervalStr = doc["interval"].as<const char*>();
+          if (strcmp(intervalStr, "on_sleep") == 0) CROSSFRONT_SETTINGS.updateInterval = CrossFrontSettings::ON_SLEEP;
+          else if (strcmp(intervalStr, "1m") == 0) CROSSFRONT_SETTINGS.updateInterval = CrossFrontSettings::ONE_MINUTE;
+          else if (strcmp(intervalStr, "2m") == 0) CROSSFRONT_SETTINGS.updateInterval = CrossFrontSettings::TWO_MINUTES;
+          else if (strcmp(intervalStr, "5m") == 0) CROSSFRONT_SETTINGS.updateInterval = CrossFrontSettings::FIVE_MINUTES;
+          else if (strcmp(intervalStr, "15m") == 0) CROSSFRONT_SETTINGS.updateInterval = CrossFrontSettings::FIFTEEN_MINUTES;
+          else if (strcmp(intervalStr, "30m") == 0) CROSSFRONT_SETTINGS.updateInterval = CrossFrontSettings::THIRTY_MINUTES;
+          else if (strcmp(intervalStr, "1h") == 0) CROSSFRONT_SETTINGS.updateInterval = CrossFrontSettings::ONE_HOUR;
+          else if (strcmp(intervalStr, "2h") == 0) CROSSFRONT_SETTINGS.updateInterval = CrossFrontSettings::TWO_HOURS;
+          else if (strcmp(intervalStr, "3h") == 0) CROSSFRONT_SETTINGS.updateInterval = CrossFrontSettings::THREE_HOURS;
+          else if (strcmp(intervalStr, "6h") == 0) CROSSFRONT_SETTINGS.updateInterval = CrossFrontSettings::SIX_HOURS;
+          else if (strcmp(intervalStr, "12h") == 0) CROSSFRONT_SETTINGS.updateInterval = CrossFrontSettings::TWELVE_HOURS;
+          else if (strcmp(intervalStr, "1d") == 0 || strcmp(intervalStr, "24h") == 0) CROSSFRONT_SETTINGS.updateInterval = CrossFrontSettings::ONE_DAY;
+          CROSSFRONT_SETTINGS.saveToFile();
         }
-      }
 
-      if (doc["interval"].is<const char*>()) {
-        const char* intervalStr = doc["interval"].as<const char*>();
-        if (strcmp(intervalStr, "on_sleep") == 0) CROSSFRONT_SETTINGS.updateInterval = CrossFrontSettings::ON_SLEEP;
-        else if (strcmp(intervalStr, "1m") == 0) CROSSFRONT_SETTINGS.updateInterval = CrossFrontSettings::ONE_MINUTE;
-        else if (strcmp(intervalStr, "2m") == 0) CROSSFRONT_SETTINGS.updateInterval = CrossFrontSettings::TWO_MINUTES;
-        else if (strcmp(intervalStr, "5m") == 0) CROSSFRONT_SETTINGS.updateInterval = CrossFrontSettings::FIVE_MINUTES;
-        else if (strcmp(intervalStr, "15m") == 0) CROSSFRONT_SETTINGS.updateInterval = CrossFrontSettings::FIFTEEN_MINUTES;
-        else if (strcmp(intervalStr, "30m") == 0) CROSSFRONT_SETTINGS.updateInterval = CrossFrontSettings::THIRTY_MINUTES;
-        else if (strcmp(intervalStr, "1h") == 0) CROSSFRONT_SETTINGS.updateInterval = CrossFrontSettings::ONE_HOUR;
-        else if (strcmp(intervalStr, "2h") == 0) CROSSFRONT_SETTINGS.updateInterval = CrossFrontSettings::TWO_HOURS;
-        else if (strcmp(intervalStr, "3h") == 0) CROSSFRONT_SETTINGS.updateInterval = CrossFrontSettings::THREE_HOURS;
-        else if (strcmp(intervalStr, "6h") == 0) CROSSFRONT_SETTINGS.updateInterval = CrossFrontSettings::SIX_HOURS;
-        else if (strcmp(intervalStr, "12h") == 0) CROSSFRONT_SETTINGS.updateInterval = CrossFrontSettings::TWELVE_HOURS;
-        else if (strcmp(intervalStr, "1d") == 0 || strcmp(intervalStr, "24h") == 0) CROSSFRONT_SETTINGS.updateInterval = CrossFrontSettings::ONE_DAY;
-        CROSSFRONT_SETTINGS.saveToFile();
-      }
-
-      if (doc["sleep_network_timeout_ms"].is<uint16_t>()) {
-        const uint16_t timeoutMs = doc["sleep_network_timeout_ms"].as<uint16_t>();
-        switch (timeoutMs) {
-          case 15000:
-          case 20000:
-          case 25000:
-          case 30000:
-            CROSSFRONT_SETTINGS.sleepNetworkTimeoutMs = timeoutMs;
-            CROSSFRONT_SETTINGS.saveToFile();
-            break;
-          default: break;
+        if (doc["sleep_network_timeout_ms"].is<uint16_t>()) {
+          const uint16_t timeoutMs = doc["sleep_network_timeout_ms"].as<uint16_t>();
+          switch (timeoutMs) {
+            case 15000:
+            case 20000:
+            case 25000:
+            case 30000:
+              CROSSFRONT_SETTINGS.sleepNetworkTimeoutMs = timeoutMs;
+              CROSSFRONT_SETTINGS.saveToFile();
+              break;
+            default: break;
+          }
         }
       }
     }
@@ -409,51 +452,81 @@ CrossFrontService::SyncResult CrossFrontService::syncNow(ProgressFn onProgress, 
     return SyncResult::CONFIG_FETCH_FAILED;
   }
 
-  // 2. Download latest sleep image
-  if (onProgress) {
-    onProgress(SyncStep::FETCHING_IMAGE, userData);
-  }
-
-  const long imageRemainingMs = getRemainingMs();
-  if (imageRemainingMs < 1000) {
-    disconnectWifi();
-    LOG_ERR("CF", "syncNow: Timed out before image fetch");
-    return SyncResult::TIMEOUT;
-  }
-
-  std::string imageUrl = server + "/api/cf/device/" + token + "/sleep.bmp";
-  std::string responseEtag;
-  uint32_t responsePollInterval = 0xFFFFFFFF;
-  auto extraHeaders = makeCrossFrontHeaders(deviceId, token);
-
-  const auto err = HttpDownloader::downloadToFile(imageUrl, SLEEP_BMP_PATH, nullptr, nullptr, "", "", false,
-                                                  static_cast<int>(imageRemainingMs), "", &responseEtag,
-                                                  extraHeaders, &responsePollInterval);
-  if (responsePollInterval != 0xFFFFFFFF &&
-      responsePollInterval != CROSSFRONT_SETTINGS.serverPollIntervalSeconds) {
-    CROSSFRONT_SETTINGS.serverPollIntervalSeconds = responsePollInterval;
-    CROSSFRONT_SETTINGS.saveToFile();
-    LOG_INF("CF", "syncNow: Server updated poll interval to %u seconds", static_cast<unsigned>(responsePollInterval));
-  }
   disconnectWifi();
 
-  if (err == HttpDownloader::DownloadError::OK) {
-    saveEtag(responseEtag);
+  // Successfully synced device configuration and Wi-Fi credentials from Web Studio.
+  // Activate CrossFront as the sleep screen mode. Sleep screen image is fetched on demand
+  // when the device enters sleep mode.
+  SETTINGS.sleepScreen = CrossPointSettings::SLEEP_SCREEN_MODE::CROSSFRONT;
+  SETTINGS.saveToFile();
+  LOG_INF("CF", "syncNow: Synchronized config successfully");
+  return SyncResult::OK;
+}
+
+CrossFrontService::RotateTokenResult CrossFrontService::rotateToken(const char* newToken, unsigned long timeoutMs) {
+  if (!newToken || strlen(newToken) < 6) {
+    return RotateTokenResult::SERVER_FAILED;
   }
 
-  if (err == HttpDownloader::DownloadError::OK || err == HttpDownloader::DownloadError::NOT_MODIFIED) {
-    SETTINGS.sleepScreen = CrossPointSettings::SLEEP_SCREEN_MODE::CROSSFRONT;
-    SETTINGS.saveToFile();
-    LOG_INF("CF", "syncNow: Synchronized image and config successfully");
-    return SyncResult::OK;
+  auto& store = WifiCredentialStore::getInstance();
+  store.loadFromFile();
+  if (store.getCredentialCount() == 0) {
+    LOG_ERR("CF", "rotateToken: No saved Wi-Fi credentials");
+    return RotateTokenResult::NO_WIFI_CONFIGURED;
   }
 
-  if (getRemainingMs() <= 0) {
-    LOG_ERR("CF", "syncNow: Timed out during image download");
-    return SyncResult::TIMEOUT;
+  if (!connectWifiQuick(timeoutMs)) {
+    disconnectWifi();
+    return RotateTokenResult::WIFI_CONNECT_FAILED;
   }
 
-  LOG_ERR("CF", "syncNow: Failed to download sleep image (%d)", static_cast<int>(err));
-  return SyncResult::IMAGE_FETCH_FAILED;
+  char deviceId[32] = {0};
+  CROSSFRONT_SETTINGS.getDeviceId(deviceId, sizeof(deviceId));
+  const char* oldToken = CROSSFRONT_SETTINGS.deviceToken;
+
+  const char* serverUrl = CROSSFRONT_SETTINGS.getServerUrl();
+  std::string server = std::string(serverUrl);
+  if (!server.empty() && server.back() == '/') {
+    server.pop_back();
+  }
+  std::string url = server + "/api/cf/device/rotate-token";
+
+  JsonDocument reqDoc;
+  reqDoc["device_id"] = deviceId;
+  reqDoc["old_token"] = oldToken;
+  reqDoc["new_token"] = newToken;
+  std::string body;
+  serializeJson(reqDoc, body);
+
+  freeink::SecureHttpClient http;
+  http.setTimeout(static_cast<int>(timeoutMs));
+  http.setInsecure();
+  if (!http.begin(url)) {
+    disconnectWifi();
+    LOG_ERR("CF", "rotateToken: Failed to begin HTTP connection: %s", url.c_str());
+    return RotateTokenResult::SERVER_FAILED;
+  }
+
+  http.setUserAgent("CrossPoint-ESP32");
+  http.addHeader("Content-Type", "application/json");
+  auto extraHeaders = makeCrossFrontHeaders(deviceId, oldToken);
+  for (const auto& h : extraHeaders) {
+    http.addHeader(h.first.c_str(), h.second.c_str());
+  }
+
+  const int httpCode = http.sendRequest("POST", body);
+  http.end();
+  disconnectWifi();
+
+  LOG_INF("CF", "rotateToken response code: %d", httpCode);
+  if (httpCode >= 200 && httpCode < 300) {
+    snprintf(CROSSFRONT_SETTINGS.deviceToken, sizeof(CROSSFRONT_SETTINGS.deviceToken), "%s", newToken);
+    CROSSFRONT_SETTINGS.saveToFile();
+    LOG_INF("CF", "rotateToken: Token rotated and saved successfully: %s", newToken);
+    return RotateTokenResult::OK;
+  }
+
+  LOG_ERR("CF", "rotateToken: Failed with server status: %d", httpCode);
+  return RotateTokenResult::SERVER_FAILED;
 }
 

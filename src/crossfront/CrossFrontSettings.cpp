@@ -8,6 +8,11 @@
 namespace {
 
 void copyToField(char* dest, const char* src, const size_t maxLen) {
+  if (!dest || maxLen == 0) return;
+  if (!src) {
+    dest[0] = '\0';
+    return;
+  }
   strncpy(dest, src, maxLen - 1);
   dest[maxLen - 1] = '\0';
 }

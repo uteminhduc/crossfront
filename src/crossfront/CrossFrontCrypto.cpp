@@ -38,19 +38,26 @@ std::string computeHmacSha256(const std::string& secret, const std::string& mess
 }
 
 void generateRandomToken(char* outToken, size_t length) {
-  static constexpr char ALPHABET[] = "0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ";
-  constexpr size_t ALPHABET_LEN = sizeof(ALPHABET) - 1;
-  constexpr uint8_t LIMIT = static_cast<uint8_t>(256 - (256 % ALPHABET_LEN));
+  static constexpr char LETTERS[] = "ABCDEFGHJKLMNPQRSTUVWXYZ";  // 24 letters, excludes ambiguous 'I' and 'O'
+  constexpr size_t LETTERS_LEN = sizeof(LETTERS) - 1;
+  static constexpr char DIGITS[] = "0123456789";
+  constexpr size_t DIGITS_LEN = sizeof(DIGITS) - 1;
 
-  size_t idx = 0;
-  while (idx < length) {
-    const uint32_t r = esp_random();
-    for (size_t b = 0; b < sizeof(r) && idx < length; ++b) {
-      const uint8_t byteVal = static_cast<uint8_t>(r >> (b * 8));
-      if (byteVal < LIMIT) {
-        outToken[idx++] = ALPHABET[byteVal % ALPHABET_LEN];
-      }
+  if (length == 8) {
+    for (size_t i = 0; i < 3; ++i) {
+      outToken[i] = LETTERS[esp_random() % LETTERS_LEN];
     }
+    for (size_t i = 3; i < 8; ++i) {
+      outToken[i] = DIGITS[esp_random() % DIGITS_LEN];
+    }
+    outToken[8] = '\0';
+    return;
+  }
+
+  static constexpr char ALPHABET[] = "0123456789ABCDEFGHJKLMNPQRSTUVWXYZ";
+  constexpr size_t ALPHABET_LEN = sizeof(ALPHABET) - 1;
+  for (size_t i = 0; i < length; ++i) {
+    outToken[i] = ALPHABET[esp_random() % ALPHABET_LEN];
   }
   outToken[length] = '\0';
 }
