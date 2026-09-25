@@ -36,13 +36,6 @@ Only the CrossPoint base versions listed below are packaged for CrossFront v1.0.
 - **CrossPoint 1.6.5rc** — X3 Global (tested) / X4 (untested): [Download `crosspoint-1.6.5rc-x3-x4-cf1.0.bin`](https://github.com/uteminhduc/crossfront/releases/download/v1.0/crosspoint-1.6.5rc-x3-x4-cf1.0.bin)
 - **CrossPoint 1.6.0 Stable** — X3 Global (tested) / X4 (untested): [Download `crosspoint-1.6.0-x3-x4-cf1.0.bin`](https://github.com/uteminhduc/crossfront/releases/download/v1.0/crosspoint-1.6.0-x3-x4-cf1.0.bin)
 
-> [!CAUTION]
-> **WARNING / CẢNH BÁO — VERIFY BEFORE FLASHING / KIỂM TRA TRƯỚC KHI CÀI**
->
-> **English:** CrossFront is provided as-is. We are not responsible for a bricked, damaged, data-lost, or unusable device caused by installing the wrong firmware or using an unsupported device. Check your model, region, CrossPoint version, and file name before flashing.
->
-> **Tiếng Việt:** CrossFront được cung cấp nguyên trạng. Chúng tôi từ chối trách nhiệm đối với máy bị brick, hư hỏng, mất dữ liệu hoặc không sử dụng được do cài sai firmware hoặc dùng thiết bị không được hỗ trợ. Hãy kiểm tra model, khu vực, phiên bản CrossPoint và tên file trước khi cài.
-
 ---
 
 CrossPoint is open-source e-reader firmware - community-built, fully hackable, free forever. It's maintained by a growing community of developers and readers who believe your device should do what you want - not what a manufacturer decided for you.
