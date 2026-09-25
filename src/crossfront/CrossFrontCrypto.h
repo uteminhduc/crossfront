@@ -5,8 +5,6 @@
 
 namespace crossfront {
 
-// Computes HMAC-SHA256 of message using secret key, returns lowercase hex string (64 chars)
-std::string computeHmacSha256(const std::string& secret, const std::string& message);
 
 // Generates cryptographically secure alphanumeric random token (e.g. 32 chars)
 void generateRandomToken(char* outToken, size_t length);

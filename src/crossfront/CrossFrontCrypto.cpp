@@ -2,40 +2,10 @@
 
 #include <esp_mac.h>
 #include <esp_random.h>
-#include <mbedtls/md.h>
-
 #include <cstdio>
 #include <cstring>
 
 namespace crossfront {
-
-std::string computeHmacSha256(const std::string& secret, const std::string& message) {
-  uint8_t hmac[32] = {0};
-  mbedtls_md_context_t ctx;
-  mbedtls_md_init(&ctx);
-
-  const mbedtls_md_info_t* mdInfo = mbedtls_md_info_from_type(MBEDTLS_MD_SHA256);
-  if (!mdInfo) {
-    mbedtls_md_free(&ctx);
-    return "";
-  }
-
-  if (mbedtls_md_setup(&ctx, mdInfo, 1) != 0) {  // 1 = HMAC enabled
-    mbedtls_md_free(&ctx);
-    return "";
-  }
-
-  mbedtls_md_hmac_starts(&ctx, reinterpret_cast<const unsigned char*>(secret.data()), secret.size());
-  mbedtls_md_hmac_update(&ctx, reinterpret_cast<const unsigned char*>(message.data()), message.size());
-  mbedtls_md_hmac_finish(&ctx, hmac);
-  mbedtls_md_free(&ctx);
-
-  char hex[65] = {0};
-  for (size_t i = 0; i < 32; ++i) {
-    snprintf(hex + (i * 2), 3, "%02x", hmac[i]);
-  }
-  return std::string(hex);
-}
 
 void generateRandomToken(char* outToken, size_t length) {
   static constexpr char LETTERS[] = "ABCDEFGHJKLMNPQRSTUVWXYZ";  // 24 letters, excludes ambiguous 'I' and 'O'
