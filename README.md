@@ -11,12 +11,16 @@ This is a custom fork of [CrossPoint Reader](https://github.com/crosspoint-reade
 - Offline Fallback: Preserves cached screens during network drops and displays a clean status screen when unconfigured.
 - Non-invasive Integration: Built as an independent module without modifying upstream e-reader core logic.
 
-### Downloads and Supported Versions
+### Downloads and Supported Devices
 
-| Base CrossPoint Version | CrossFront Version | Target Devices | Release Tag | Firmware Downloads |
+Currently, CrossFront firmware is only tested and officially supported on **Xteink X3 (Global / International Edition)**. Xteink X4 and X4 Pro have not been tested due to lack of test devices and are marked as not supported yet.
+
+| Device | Firmware Version | Release Tag | Download Binary | Status and Notes |
 |---|---|---|---|---|
-| 1.6.5 (Release Candidate) | v1.0 | Xteink X3, X4, X4 Pro | `v1.6.5rc-cf1.0` | [Release Notes](https://github.com/uteminhduc/crossfront/releases/tag/v1.6.5rc-cf1.0) / [X3-X4 .bin](https://github.com/uteminhduc/crossfront/releases/download/v1.6.5rc-cf1.0/crossfront-x3-x4.bin) / [X4 Pro .bin](https://github.com/uteminhduc/crossfront/releases/download/v1.6.5rc-cf1.0/crossfront-x4pro.bin) |
-| 1.6.0 (Official Stable) | v1.0 | Xteink X3, X4, X4 Pro | `v1.6.0-cf1.0` | [Release Notes](https://github.com/uteminhduc/crossfront/releases/tag/v1.6.0-cf1.0) / [X3-X4 .bin](https://github.com/uteminhduc/crossfront/releases/download/v1.6.0-cf1.0/crossfront-x3-x4.bin) / [X4 Pro .bin](https://github.com/uteminhduc/crossfront/releases/download/v1.6.0-cf1.0/crossfront-x4pro.bin) |
+| **Xteink X3** | CrossPoint 1.6.5rc + CF v1.0 | `v1.6.5rc-cf1.0` | [crossfront-x3.bin](https://github.com/uteminhduc/crossfront/releases/download/v1.6.5rc-cf1.0/crossfront-x3.bin) | Supported. Fully tested on Xteink X3 (Global / International Edition) with DS3231 RTC. Supports timed sleep wakeup and quiet hours. |
+| | CrossPoint 1.6.0 + CF v1.0 | `v1.6.0-cf1.0` | [crossfront-x3.bin](https://github.com/uteminhduc/crossfront/releases/download/v1.6.0-cf1.0/crossfront-x3.bin) | Supported. Official stable base, fully tested on Xteink X3 (Global / International Edition). |
+| **Xteink X4** | — | — | — | Not supported yet (untested due to lack of hardware device). |
+| **Xteink X4 Pro** | — | — | — | Not supported yet (untested due to lack of hardware device). |
 
 ---
 

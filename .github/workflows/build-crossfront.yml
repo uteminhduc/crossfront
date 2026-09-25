@@ -17,11 +17,8 @@ jobs:
       matrix:
         include:
           - env: gh_release
-            device: x3-x4
-            name: crossfront-x3-x4.bin
-          - env: x4pro-gh_release
-            device: x4pro
-            name: crossfront-x4pro.bin
+            device: x3
+            name: crossfront-x3.bin
 
     steps:
       - name: Checkout repository
