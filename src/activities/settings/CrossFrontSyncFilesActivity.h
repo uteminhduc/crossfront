@@ -27,7 +27,7 @@ class CrossFrontSyncFilesActivity final : public Activity {
   void render(RenderLock&&) override;
 
   bool preventAutoSleep() override { return true; }
-  bool skipLoopDelay() override { return true; }
+  bool skipLoopDelay() override;
 
  private:
   enum class State : uint8_t {

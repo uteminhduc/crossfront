@@ -63,25 +63,32 @@ void CrossFrontSyncFilesActivity::onExit() {
   Activity::onExit();
 }
 
-void CrossFrontSyncFilesActivity::loop() {
-  mappedInput.update();
+bool CrossFrontSyncFilesActivity::skipLoopDelay() {
+  return state == State::CONNECTING_WIFI || state == State::FETCHING_LIST || state == State::DOWNLOADING;
+}
 
-  if (mappedInput.wasReleased(MappedInputManager::Button::Back)) {
-    if (state == State::COMPLETE || state == State::NO_FILES || state == State::ERROR_STATE ||
-        state == State::CONNECTING_WIFI) {
+void CrossFrontSyncFilesActivity::loop() {
+  int touchX = 0;
+  int touchY = 0;
+  const bool screenTapped = mappedInput.wasScreenTapped(touchX, touchY);
+  const bool backPressed = mappedInput.wasReleased(MappedInputManager::Button::Back);
+  const bool confirmPressed = mappedInput.wasReleased(MappedInputManager::Button::Confirm);
+
+  if (state == State::COMPLETE || state == State::NO_FILES || state == State::ERROR_STATE) {
+    if (backPressed || confirmPressed || screenTapped) {
       finish();
       return;
     }
-    if (state == State::DOWNLOADING) {
+  } else if (state == State::CONNECTING_WIFI) {
+    if (backPressed || screenTapped) {
+      finish();
+      return;
+    }
+  } else if (state == State::DOWNLOADING) {
+    if (backPressed || screenTapped) {
       cancelRequested = true;
       return;
     }
-  }
-
-  if ((state == State::COMPLETE || state == State::NO_FILES || state == State::ERROR_STATE) &&
-      mappedInput.wasReleased(MappedInputManager::Button::Confirm)) {
-    finish();
-    return;
   }
 
   switch (state) {
