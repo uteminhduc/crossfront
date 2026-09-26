@@ -16,6 +16,7 @@
 #include "MappedInputManager.h"
 #include "WifiCredentialStore.h"
 #include "activities/util/ConfirmationActivity.h"
+#include "activities/settings/CrossFrontSyncFilesActivity.h"
 #include "components/UITheme.h"
 #include "crossfront/CrossFrontCrypto.h"
 #include "crossfront/CrossFrontService.h"
@@ -306,6 +307,12 @@ void CrossFrontSetupActivity::buildScreen(UiScreen& screen) {
     }
     rowItems[3].value = rowValues[3].empty() ? nullptr : rowValues[3].c_str();
     rowItems[3].actionValue = 3;
+
+    rowItems[4].sectionHeading = nullptr;
+    rowItems[4].label = tr(STR_CROSSFRONT_SYNC_FILES);
+    rowValues[4] = "";
+    rowItems[4].value = nullptr;
+    rowItems[4].actionValue = 4;
   } else if (viewMode == ViewMode::INTERVAL) {
     for (int index = 0; index < CrossFrontSettings::UPDATE_INTERVAL_COUNT; ++index) {
       rowItems[index].sectionHeading = nullptr;
@@ -362,6 +369,12 @@ void CrossFrontSetupActivity::activateIndex(const int index) {
       requestUpdate(true);
     } else if (index == 3) {
       promptRotateToken();
+    } else if (index == 4) {
+      startActivityForResult(
+          makeUniqueNoThrow<CrossFrontSyncFilesActivity>(renderer, mappedInput),
+          [this](const ActivityResult& /*result*/) {
+            requestUpdate(true);
+          });
     }
     return;
   }
@@ -375,6 +388,7 @@ void CrossFrontSetupActivity::activateIndex(const int index) {
     CROSSFRONT_SETTINGS.sleepNetworkTimeoutMs = waitOptionsMs[index];
   }
 
+  CROSSFRONT_SETTINGS.settingsDirty = true;
   CROSSFRONT_SETTINGS.saveToFile();
   viewMode = ViewMode::MAIN;
   nav.reset();

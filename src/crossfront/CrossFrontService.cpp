@@ -30,6 +30,24 @@ std::vector<std::pair<std::string, std::string>> makeCrossFrontHeaders(const cha
   }
   return headers;
 }
+
+const char* intervalToString(const uint8_t interval) {
+  switch (interval) {
+    case CrossFrontSettings::ON_SLEEP: return "on_sleep";
+    case CrossFrontSettings::ONE_MINUTE: return "1m";
+    case CrossFrontSettings::TWO_MINUTES: return "2m";
+    case CrossFrontSettings::FIVE_MINUTES: return "5m";
+    case CrossFrontSettings::FIFTEEN_MINUTES: return "15m";
+    case CrossFrontSettings::THIRTY_MINUTES: return "30m";
+    case CrossFrontSettings::ONE_HOUR: return "1h";
+    case CrossFrontSettings::TWO_HOURS: return "2h";
+    case CrossFrontSettings::THREE_HOURS: return "3h";
+    case CrossFrontSettings::SIX_HOURS: return "6h";
+    case CrossFrontSettings::TWELVE_HOURS: return "12h";
+    case CrossFrontSettings::ONE_DAY: return "1d";
+    default: return "on_sleep";
+  }
+}
 }  // namespace
 
 std::string CrossFrontService::getSavedEtag() {
@@ -359,14 +377,39 @@ CrossFrontService::SyncResult CrossFrontService::syncNow(ProgressFn onProgress, 
   http.setInsecure();
   if (http.begin(configUrl)) {
     http.setUserAgent("CrossPoint-ESP32");
+    http.addHeader("Content-Type", "application/json");
     auto extraHeaders = makeCrossFrontHeaders(deviceId, token);
     for (const auto& h : extraHeaders) {
       http.addHeader(h.first.c_str(), h.second.c_str());
     }
-    const int httpCode = http.GET([&jsonBody](const uint8_t* data, size_t len) {
-      jsonBody.append(reinterpret_cast<const char*>(data), len);
-      return true;
-    });
+
+    const bool isDirty = CROSSFRONT_SETTINGS.settingsDirty;
+    JsonDocument reqDoc;
+    if (isDirty) {
+      reqDoc["interval"] = intervalToString(CROSSFRONT_SETTINGS.updateInterval);
+      reqDoc["sleepNetworkTimeoutMs"] = CROSSFRONT_SETTINGS.sleepNetworkTimeoutMs;
+      reqDoc["ebookDir"] = CROSSFRONT_SETTINGS.getEbookDir();
+    }
+    JsonArray reqWifi = reqDoc["wifiList"].to<JsonArray>();
+    const size_t localCredCount = store.getCredentialCount();
+    for (size_t i = 0; i < localCredCount; ++i) {
+      const auto cred = store.getCredentialAt(i);
+      if (cred.has_value() && !cred->ssid.empty()) {
+        JsonObject net = reqWifi.add<JsonObject>();
+        net["ssid"] = cred->ssid;
+        net["password"] = cred->password;
+      }
+    }
+    std::string reqBody;
+    serializeJson(reqDoc, reqBody);
+
+    const int httpCode = http.sendRequest("POST",
+                                          reinterpret_cast<const uint8_t*>(reqBody.data()),
+                                          reqBody.size(),
+                                          [&jsonBody](const uint8_t* data, size_t len) {
+                                            jsonBody.append(reinterpret_cast<const char*>(data), len);
+                                            return true;
+                                          });
     http.end();
     if (httpCode == 404 || httpCode == 401) {
       disconnectWifi();
@@ -377,50 +420,64 @@ CrossFrontService::SyncResult CrossFrontService::syncNow(ProgressFn onProgress, 
       JsonDocument doc;
       if (deserializeJson(doc, jsonBody) == DeserializationError::Ok) {
         configOk = true;
-        if (doc["wifi_list"].is<JsonArray>()) {
+        if (doc["wifiList"].is<JsonArray>()) {
           bool added = false;
-          for (JsonObject net : doc["wifi_list"].as<JsonArray>()) {
+          for (JsonObject net : doc["wifiList"].as<JsonArray>()) {
             const char* ssid = net["ssid"];
             const char* pass = net["password"] | "";
             if (ssid && strlen(ssid) > 0) {
-              store.addCredential(ssid, pass);
-              added = true;
+              if (!store.hasSavedCredential(ssid)) {
+                store.addCredential(ssid, pass);
+                added = true;
+              }
             }
           }
           if (added) {
             store.saveToFile();
-            LOG_INF("CF", "Wi-Fi list updated from CrossFront Web App");
+            LOG_INF("CF", "Wi-Fi list merged from CrossFront Web App");
           }
         }
 
-        if (doc["interval"].is<const char*>()) {
-          const char* intervalStr = doc["interval"].as<const char*>();
-          if (strcmp(intervalStr, "on_sleep") == 0) CROSSFRONT_SETTINGS.updateInterval = CrossFrontSettings::ON_SLEEP;
-          else if (strcmp(intervalStr, "1m") == 0) CROSSFRONT_SETTINGS.updateInterval = CrossFrontSettings::ONE_MINUTE;
-          else if (strcmp(intervalStr, "2m") == 0) CROSSFRONT_SETTINGS.updateInterval = CrossFrontSettings::TWO_MINUTES;
-          else if (strcmp(intervalStr, "5m") == 0) CROSSFRONT_SETTINGS.updateInterval = CrossFrontSettings::FIVE_MINUTES;
-          else if (strcmp(intervalStr, "15m") == 0) CROSSFRONT_SETTINGS.updateInterval = CrossFrontSettings::FIFTEEN_MINUTES;
-          else if (strcmp(intervalStr, "30m") == 0) CROSSFRONT_SETTINGS.updateInterval = CrossFrontSettings::THIRTY_MINUTES;
-          else if (strcmp(intervalStr, "1h") == 0) CROSSFRONT_SETTINGS.updateInterval = CrossFrontSettings::ONE_HOUR;
-          else if (strcmp(intervalStr, "2h") == 0) CROSSFRONT_SETTINGS.updateInterval = CrossFrontSettings::TWO_HOURS;
-          else if (strcmp(intervalStr, "3h") == 0) CROSSFRONT_SETTINGS.updateInterval = CrossFrontSettings::THREE_HOURS;
-          else if (strcmp(intervalStr, "6h") == 0) CROSSFRONT_SETTINGS.updateInterval = CrossFrontSettings::SIX_HOURS;
-          else if (strcmp(intervalStr, "12h") == 0) CROSSFRONT_SETTINGS.updateInterval = CrossFrontSettings::TWELVE_HOURS;
-          else if (strcmp(intervalStr, "1d") == 0 || strcmp(intervalStr, "24h") == 0) CROSSFRONT_SETTINGS.updateInterval = CrossFrontSettings::ONE_DAY;
+        if (isDirty) {
+          CROSSFRONT_SETTINGS.settingsDirty = false;
           CROSSFRONT_SETTINGS.saveToFile();
-        }
+          LOG_INF("CF", "Local settings synced to CrossFront server");
+        } else {
+          JsonObject deviceConfig = doc["config"].is<JsonObject>() ? doc["config"].as<JsonObject>() : doc.as<JsonObject>();
+          if (deviceConfig["interval"].is<const char*>()) {
+            const char* intervalStr = deviceConfig["interval"].as<const char*>();
+            if (strcmp(intervalStr, "on_sleep") == 0) CROSSFRONT_SETTINGS.updateInterval = CrossFrontSettings::ON_SLEEP;
+            else if (strcmp(intervalStr, "1m") == 0) CROSSFRONT_SETTINGS.updateInterval = CrossFrontSettings::ONE_MINUTE;
+            else if (strcmp(intervalStr, "2m") == 0) CROSSFRONT_SETTINGS.updateInterval = CrossFrontSettings::TWO_MINUTES;
+            else if (strcmp(intervalStr, "5m") == 0) CROSSFRONT_SETTINGS.updateInterval = CrossFrontSettings::FIVE_MINUTES;
+            else if (strcmp(intervalStr, "15m") == 0) CROSSFRONT_SETTINGS.updateInterval = CrossFrontSettings::FIFTEEN_MINUTES;
+            else if (strcmp(intervalStr, "30m") == 0) CROSSFRONT_SETTINGS.updateInterval = CrossFrontSettings::THIRTY_MINUTES;
+            else if (strcmp(intervalStr, "1h") == 0) CROSSFRONT_SETTINGS.updateInterval = CrossFrontSettings::ONE_HOUR;
+            else if (strcmp(intervalStr, "2h") == 0) CROSSFRONT_SETTINGS.updateInterval = CrossFrontSettings::TWO_HOURS;
+            else if (strcmp(intervalStr, "3h") == 0) CROSSFRONT_SETTINGS.updateInterval = CrossFrontSettings::THREE_HOURS;
+            else if (strcmp(intervalStr, "6h") == 0) CROSSFRONT_SETTINGS.updateInterval = CrossFrontSettings::SIX_HOURS;
+            else if (strcmp(intervalStr, "12h") == 0) CROSSFRONT_SETTINGS.updateInterval = CrossFrontSettings::TWELVE_HOURS;
+            else if (strcmp(intervalStr, "1d") == 0 || strcmp(intervalStr, "24h") == 0) CROSSFRONT_SETTINGS.updateInterval = CrossFrontSettings::ONE_DAY;
+            CROSSFRONT_SETTINGS.saveToFile();
+          }
 
-        if (doc["sleep_network_timeout_ms"].is<uint16_t>()) {
-          const uint16_t timeoutMs = doc["sleep_network_timeout_ms"].as<uint16_t>();
-          switch (timeoutMs) {
-            case 15000:
-            case 20000:
-            case 25000:
-            case 30000:
-              CROSSFRONT_SETTINGS.sleepNetworkTimeoutMs = timeoutMs;
-              CROSSFRONT_SETTINGS.saveToFile();
-              break;
-            default: break;
+          if (deviceConfig["sleepNetworkTimeoutMs"].is<uint16_t>()) {
+            const uint16_t timeoutMs = deviceConfig["sleepNetworkTimeoutMs"].as<uint16_t>();
+            switch (timeoutMs) {
+              case 15000:
+              case 20000:
+              case 25000:
+              case 30000:
+                CROSSFRONT_SETTINGS.sleepNetworkTimeoutMs = timeoutMs;
+                CROSSFRONT_SETTINGS.saveToFile();
+                break;
+              default: break;
+            }
+          }
+
+          if (deviceConfig["ebookDir"].is<const char*>()) {
+            CROSSFRONT_SETTINGS.setEbookDir(deviceConfig["ebookDir"].as<const char*>());
+            CROSSFRONT_SETTINGS.saveToFile();
           }
         }
       }
@@ -477,9 +534,9 @@ CrossFrontService::RotateTokenResult CrossFrontService::rotateToken(const char* 
   std::string url = server + "/api/cf/device/rotate-token";
 
   JsonDocument reqDoc;
-  reqDoc["device_id"] = deviceId;
-  reqDoc["old_token"] = oldToken;
-  reqDoc["new_token"] = newToken;
+  reqDoc["deviceId"] = deviceId;
+  reqDoc["oldToken"] = oldToken;
+  reqDoc["newToken"] = newToken;
   std::string body;
   serializeJson(reqDoc, body);
 

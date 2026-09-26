@@ -18,6 +18,7 @@ class CrossFrontSettings : public PersistableStore<CrossFrontSettings> {
  public:
   static constexpr char DEFAULT_SERVER_URL[] = "https://cf-api.pocketgo.org";
   static constexpr char DEFAULT_WEB_URL[] = "https://cf.pocketgo.org";
+  static constexpr char DEFAULT_EBOOK_DIR[] = "/crossfront-ebooks";
 
   enum UpdateInterval : uint8_t {
     ON_SLEEP = 0,
@@ -38,9 +39,11 @@ class CrossFrontSettings : public PersistableStore<CrossFrontSettings> {
   char serverUrl[128] = "";
   char webUrl[128] = "";
   char deviceToken[64] = "";
+  char ebookDir[64] = "/crossfront-ebooks";
   uint8_t updateInterval = ON_SLEEP;
   uint16_t sleepNetworkTimeoutMs = 15000;
   uint32_t serverPollIntervalSeconds = 0;
+  bool settingsDirty = false;
 
   static const char* getFilePath() { return "/.crosspoint/crossfront.json"; }
   void toJson(JsonDocument& doc) const;
@@ -53,6 +56,9 @@ class CrossFrontSettings : public PersistableStore<CrossFrontSettings> {
   const char* getWebUrl() const {
     return webUrl[0] != '\0' ? webUrl : DEFAULT_WEB_URL;
   }
+
+  const char* getEbookDir() const;
+  void setEbookDir(const char* dir);
 
   void getDeviceId(char* outId, size_t maxLen) const;
   uint32_t getUpdateIntervalSeconds() const;

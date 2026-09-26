@@ -8,7 +8,7 @@
 
 class CrossFrontSetupActivity final : public UiListActivity {
  public:
-  static constexpr int MAIN_ITEM_COUNT = 4;
+  static constexpr int MAIN_ITEM_COUNT = 5;
   static constexpr int WAIT_ITEM_COUNT = 4;
   static constexpr int MAX_ITEM_COUNT = CrossFrontSettings::UPDATE_INTERVAL_COUNT;
 

@@ -3,6 +3,14 @@
 Project: Open-source e-reader firmware for Xteink X4 (ESP32-C3)
 Mission: Provide a lightweight, high-performance reading experience focused on EPUB rendering on constrained hardware.
 
+## CrossFront contract
+
+The backend chooses a `cf_sleep_screens` record before returning `/sleep.bmp`; firmware stays screen-agnostic and keeps the existing BMP/ETag cache. `/config` carries the device `config` object and the `wifiList` DTO key. File sync endpoints return `cf_media_assignments` IDs, so `/done` posts that assignment ID and never marks a media record globally downloaded.
+
+### JSON naming
+
+CrossFront DTOs use lowerCamelCase (`wifiList`, `sleepNetworkTimeoutMs`, `ebookDir`, `deviceId`, `oldToken`, `newToken`, `fileName`). C++ member and local variable naming remains the firmware's normal C++ convention. PocketBase record fields such as `device_id` and `screen_mode` remain snake_case because those names are defined by the collection schema.
+
 ## AI Agent Identity and Cognitive Rules
 
 * Role: Senior Embedded Systems Engineer (ESP-IDF/Arduino-ESP32 specialized).

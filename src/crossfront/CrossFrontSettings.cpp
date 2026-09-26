@@ -36,6 +36,7 @@ uint16_t validSleepNetworkTimeout(const uint16_t timeoutMs) {
 CrossFrontSettings::CrossFrontSettings() {
   copyToField(serverUrl, DEFAULT_SERVER_URL, sizeof(serverUrl));
   copyToField(webUrl, DEFAULT_WEB_URL, sizeof(webUrl));
+  copyToField(ebookDir, DEFAULT_EBOOK_DIR, sizeof(ebookDir));
 }
 
 #include "crossfront/CrossFrontCrypto.h"
@@ -44,9 +45,11 @@ void CrossFrontSettings::toJson(JsonDocument& doc) const {
   if (serverUrl[0] != '\0') doc["serverUrl"] = serverUrl;
   if (webUrl[0] != '\0') doc["webUrl"] = webUrl;
   if (deviceToken[0] != '\0') doc["deviceToken"] = deviceToken;
+  if (ebookDir[0] != '\0') doc["ebookDir"] = ebookDir;
   doc["updateInterval"] = updateInterval;
   doc["sleepNetworkTimeoutMs"] = sleepNetworkTimeoutMs;
   if (serverPollIntervalSeconds > 0) doc["serverPollIntervalSeconds"] = serverPollIntervalSeconds;
+  doc["settingsDirty"] = settingsDirty;
 }
 
 bool CrossFrontSettings::fromJson(const JsonVariantConst doc) {
@@ -59,12 +62,51 @@ bool CrossFrontSettings::fromJson(const JsonVariantConst doc) {
   if (doc["deviceToken"].is<const char*>()) {
     copyToField(deviceToken, doc["deviceToken"].as<const char*>(), sizeof(deviceToken));
   }
+  if (doc["ebookDir"].is<const char*>()) {
+    setEbookDir(doc["ebookDir"].as<const char*>());
+  } else if (ebookDir[0] == '\0') {
+    setEbookDir(DEFAULT_EBOOK_DIR);
+  }
   if (serverUrl[0] == '\0') copyToField(serverUrl, DEFAULT_SERVER_URL, sizeof(serverUrl));
   if (webUrl[0] == '\0') copyToField(webUrl, DEFAULT_WEB_URL, sizeof(webUrl));
   updateInterval = validInterval(doc["updateInterval"] | static_cast<uint8_t>(ON_SLEEP));
   sleepNetworkTimeoutMs = validSleepNetworkTimeout(doc["sleepNetworkTimeoutMs"] | static_cast<uint16_t>(15000));
   serverPollIntervalSeconds = doc["serverPollIntervalSeconds"] | static_cast<uint32_t>(0);
+  settingsDirty = doc["settingsDirty"] | false;
   return true;
+}
+
+const char* CrossFrontSettings::getEbookDir() const {
+  return (ebookDir[0] != '\0' && strcmp(ebookDir, "/") != 0) ? ebookDir : DEFAULT_EBOOK_DIR;
+}
+
+void CrossFrontSettings::setEbookDir(const char* dir) {
+  if (!dir || dir[0] == '\0' || strcmp(dir, "/") == 0) {
+    copyToField(ebookDir, DEFAULT_EBOOK_DIR, sizeof(ebookDir));
+    return;
+  }
+  char buf[sizeof(ebookDir)];
+  size_t idx = 0;
+  if (dir[0] != '/') {
+    buf[idx++] = '/';
+  }
+  while (*dir != '\0' && idx < sizeof(buf) - 1) {
+    if (*dir == '\\') {
+      buf[idx++] = '/';
+    } else {
+      buf[idx++] = *dir;
+    }
+    dir++;
+  }
+  buf[idx] = '\0';
+  while (idx > 1 && buf[idx - 1] == '/') {
+    buf[--idx] = '\0';
+  }
+  if (strcmp(buf, "/") == 0) {
+    copyToField(ebookDir, DEFAULT_EBOOK_DIR, sizeof(ebookDir));
+  } else {
+    copyToField(ebookDir, buf, sizeof(ebookDir));
+  }
 }
 
 void CrossFrontSettings::getDeviceId(char* outId, const size_t maxLen) const {
