@@ -5,13 +5,16 @@
 #include <GfxRenderer.h>
 #include <HalStorage.h>
 #include <I18n.h>
+#include <LibraryBuilder.h>
 #include <Logging.h>
 #include <SecureHttpClient.h>
 
 #include "MappedInputManager.h"
+#include "SdCardFontSystem.h"
 #include "components/UITheme.h"
 #include "crossfront/CrossFrontFileSafety.h"
 #include "fontIds.h"
+#include "util/BookCacheUtils.h"
 
 namespace {
 std::vector<std::pair<std::string, std::string>> makeHeaders(const char* deviceId, const char* token) {
@@ -472,6 +475,13 @@ bool CrossFrontSyncFilesActivity::downloadSingleFile(const FileItem& file) {
     LOG_ERR("CF", "Failed to commit temp file %s to %s", tmpPath.c_str(), destPath.c_str());
     Storage.remove(tmpPath.c_str());
     return false;
+  }
+
+  if (file.type == "book") {
+    clearBookCache(destPath);
+    library::markLibraryIndexDirty();
+  } else if (file.type == "font") {
+    sdFontSystem.markRegistryDirty();
   }
 
   LOG_INF("CF", "Successfully saved %s (%u bytes)", destPath.c_str(), static_cast<unsigned>(actualBytes));

@@ -18,7 +18,7 @@ This is a custom fork of [CrossPoint Reader](https://github.com/crosspoint-reade
 
 ### Downloads and Supported Devices
 
-CrossFront v1.0 provides an ESP32-C3 binary for **Xteink X3 Global and Xteink X4**. X4 has no RTC, so scheduled wakeup is not available on battery. Domestic/China editions are USB-locked by default, and Xteink X4 Pro (ESP32-S3) is not supported yet.
+This source tracks **CrossPoint 1.6.5**. The published CrossFront v1.0 download below was built on **1.6.5rc**; a 1.6.5-based CrossFront binary has not been released yet. The ESP32-C3 binary is for **Xteink X3 Global and Xteink X4**. X4 has no RTC, so scheduled wakeup is not available on battery. Domestic/China editions are USB-locked by default; Xteink X4 Pro and X4 Classic (ESP32-S3) have no CrossFront binary yet.
 
 > [!CAUTION]
 > **WARNING / CẢNH BÁO — READ BEFORE INSTALLING / ĐỌC TRƯỚC KHI CÀI**
@@ -29,7 +29,7 @@ CrossFront v1.0 provides an ESP32-C3 binary for **Xteink X3 Global and Xteink X4
 
 #### CrossFront v1.0 — [Release page](https://github.com/uteminhduc/crossfront/releases/tag/v1.0)
 
-This CrossPoint 1.6.5rc-based firmware works on **Xteink X3 Global and Xteink X4** because both use the same ESP32-C3 binary:
+The published CrossPoint 1.6.5rc-based firmware works on **Xteink X3 Global and Xteink X4** because both use the same ESP32-C3 binary:
 
 - **CrossPoint 1.6.5rc** — X3 Global (tested) / X4 (untested): [Download `crosspoint-1.6.5rc-x3-x4-cf1.0.bin`](https://github.com/uteminhduc/crossfront/releases/download/v1.0/crosspoint-1.6.5rc-x3-x4-cf1.0.bin)
 
@@ -39,7 +39,7 @@ CrossPoint is open-source e-reader firmware - community-built, fully hackable, f
 
 ### Now running on:
 - **ESP32C3-based** Xteink X4 and X3.
-- **ESP32S3-based** Xteink X4Pro, Seeed reTerminal Sticky, M5PaperMono
+- **ESP32S3-based** Xteink X4Pro and X4Classic, Seeed reTerminal Sticky, M5PaperMono
 
 Check [our Devices page](https://crosspointreader.com/devices) for the full list.
 
@@ -166,7 +166,11 @@ See [Development quick start](#development-quick-start) below.
 
 ## Custom SD-card fonts
 
-Convert your own TTF/OTF files into `.cpfont` files that load from the SD card. No firmware reflash is needed.
+On devices with external RAM enabled in CrossPoint, copy `.ttf`, `.otf`, or `.ttc` files to the SD card and select them as reader fonts. Put one file in `/fonts/` or `/.fonts/`, or put one family's files in a subfolder. See the [SD card font guide](./docs/sd-card-fonts.md) for the folder layout and styles.
+
+On other devices, convert the font to `.cpfont` first. `.cpfont` files also work on devices with external RAM enabled and have better performance. No firmware reflash is needed to add fonts.
+
+To make `.cpfont` files:
 
 1. Go to https://crosspointreader.com/fonts and open the "SD-card font builder" form.
 2. Upload up to four styles (regular, bold, italic, bold-italic), set the family name, point sizes, and Unicode range.

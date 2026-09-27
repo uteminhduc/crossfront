@@ -62,6 +62,19 @@ TEST_F(LibraryBuilderTest, UnchangedRebuildReusesMetadataAndDoesNotReplaceIndex)
   EXPECT_EQ(fake::files[INDEX]->bytes, old);
 }
 
+TEST_F(LibraryBuilderTest, BookTransferDirtyMarkerClearsAfterSuccessfulRebuild) {
+  initial();
+  EXPECT_FALSE(isLibraryIndexDirty());
+
+  fake::add("/new.epub");
+  ASSERT_TRUE(markLibraryIndexDirty());
+  EXPECT_TRUE(isLibraryIndexDirty());
+
+  ASSERT_TRUE(buildLibraryIndex("/", stats, true));
+  EXPECT_FALSE(isLibraryIndexDirty());
+  EXPECT_EQ(stats.books, 3);
+}
+
 TEST_F(LibraryBuilderTest, FolderHeavyUnchangedReconciliationIoScalesLinearly) {
   const auto measure = [this](const unsigned count) {
     fake::reset();
