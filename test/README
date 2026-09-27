@@ -13,3 +13,29 @@ Run a single suite directly:
 
 Google Test is fetched via CMake FetchContent on first configure; the pinned
 version lives in test/CMakeLists.txt.
+
+PlatformIO firmware builds (`pio run -e default`, `pio run -e gh_release`) do
+not run host tests. Run `pio run -t unit-tests` or the CMake/CTest commands
+above separately. CI runs firmware builds and host tests in distinct jobs on
+pull requests and pushes to `master` or `crossfront`.
+
+CrossFront host coverage (`CrossFrontSafetyTest`) checks hardware-ID formatting,
+token shape/termination, rejects unsafe file assignment IDs, names, and SD
+folders, and verifies backup/rollback on failed file replacement. ESP random/MAC
+and SD operations are stubbed; these tests cannot verify hardware entropy,
+HTTP/TLS, SD behavior, or display rendering.
+
+Before flashing a custom build after an upstream release merge, use a spare SD
+card and verify manually:
+
+  - Pairing and token rotation keep the same 12-character device ID across
+    setup QR, config, sleep image, and file-sync requests.
+  - Wi-Fi failure and timeout leave the previous cached sleep image intact;
+    HTTP 304 preserves BMP/ETag without rewriting the BMP.
+  - A 200 response updates BMP/ETag; invalid BMP, 4xx, and 5xx paths show a
+    safe fallback rather than a broken or stale screen.
+  - File sync with a valid book/font/sleep file writes only to its intended
+    folder; cancellation, SD-full, interrupted transfer, and rename failure
+    leave no corrupt final file and do not acknowledge the assignment.
+  - Check free heap, largest allocatable block, boot/wake logs, and flash target
+    on X3/X4 before trusting the firmware on a daily-use device.

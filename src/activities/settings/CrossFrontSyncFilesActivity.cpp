@@ -10,6 +10,7 @@
 
 #include "MappedInputManager.h"
 #include "components/UITheme.h"
+#include "crossfront/CrossFrontFileSafety.h"
 #include "fontIds.h"
 
 namespace {
@@ -228,8 +229,10 @@ bool CrossFrontSyncFilesActivity::fetchFileList() {
         item.folder = obj["folder"] | "";
         item.size = obj["size"] | 0;
         item.downloaded = false;
-        if (!item.id.empty() && !item.name.empty()) {
+        if (crossfront::isSafeAssignmentId(item.id) && crossfront::isSafeFileName(item.name)) {
           pendingFiles.push_back(std::move(item));
+        } else {
+          LOG_ERR("CF", "Skipping file assignment with unsafe ID or name");
         }
       }
     }
@@ -265,7 +268,8 @@ std::string extractFontFamilyName(const std::string& filename) {
 
 std::string CrossFrontSyncFilesActivity::resolveAndSanitizeTargetFolder(const FileItem& file) const {
   if (file.type == "font") {
-    if (!file.folder.empty() && (file.folder.rfind("/.fonts", 0) == 0 || file.folder.rfind("/fonts", 0) == 0)) {
+    if (file.folder == "/.fonts" || file.folder.rfind("/.fonts/", 0) == 0 ||
+        file.folder == "/fonts" || file.folder.rfind("/fonts/", 0) == 0) {
       return file.folder;
     }
     const char* root = Storage.exists("/.fonts") ? "/.fonts" : (Storage.exists("/fonts") ? "/fonts" : "/.fonts");
@@ -364,6 +368,11 @@ bool CrossFrontSyncFilesActivity::ensureTargetFolderExists(const std::string& fo
 }
 
 bool CrossFrontSyncFilesActivity::downloadSingleFile(const FileItem& file) {
+  if (!crossfront::isSafeAssignmentId(file.id) || !crossfront::isSafeFileName(file.name)) {
+    LOG_ERR("CF", "Unsafe file assignment ID or name rejected");
+    return false;
+  }
+
   if (ESP.getFreeHeap() < HttpDownloader::MIN_TLS_FREE_HEAP ||
       ESP.getMaxAllocHeap() < HttpDownloader::MIN_TLS_MAX_ALLOC) {
     LOG_ERR("CF", "Low heap before file download (%u free, %u max block)", ESP.getFreeHeap(), ESP.getMaxAllocHeap());
@@ -371,6 +380,10 @@ bool CrossFrontSyncFilesActivity::downloadSingleFile(const FileItem& file) {
   }
 
   const std::string folder = resolveAndSanitizeTargetFolder(file);
+  if (!crossfront::isSafeTargetFolder(folder)) {
+    LOG_ERR("CF", "Unsafe target folder rejected");
+    return false;
+  }
   if (!ensureTargetFolderExists(folder)) {
     LOG_ERR("CF", "Target folder missing and cannot be created: %s", folder.c_str());
     return false;
@@ -457,11 +470,7 @@ bool CrossFrontSyncFilesActivity::downloadSingleFile(const FileItem& file) {
     return false;
   }
 
-  if (Storage.exists(destPath.c_str())) {
-    Storage.remove(destPath.c_str());
-  }
-
-  if (!Storage.rename(tmpPath.c_str(), destPath.c_str())) {
+  if (!crossfront::replaceDownloadedFile(Storage, tmpPath, destPath)) {
     LOG_ERR("CF", "Failed to commit temp file %s to %s", tmpPath.c_str(), destPath.c_str());
     Storage.remove(tmpPath.c_str());
     return false;

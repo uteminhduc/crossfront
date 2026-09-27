@@ -2,7 +2,7 @@ name: CI (build)
 
 on:
   push:
-    branches: [master]
+    branches: [master, crossfront]
   pull_request:
 
 permissions:
