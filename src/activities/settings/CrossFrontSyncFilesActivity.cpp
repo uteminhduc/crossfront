@@ -17,7 +17,7 @@ namespace {
 std::vector<std::pair<std::string, std::string>> makeHeaders(const char* deviceId, const char* token) {
   std::vector<std::pair<std::string, std::string>> headers;
   headers.reserve(2);
-  headers.emplace_back("X-Device-Id", deviceId);
+  headers.emplace_back("X-Device-Id", deviceId ? deviceId : "");
   if (token && token[0] != '\0') {
     headers.emplace_back("X-Device-Token", token);
   }
@@ -171,10 +171,9 @@ bool CrossFrontSyncFilesActivity::fetchFileList() {
     server.pop_back();
   }
 
-  const char* token = (CROSSFRONT_SETTINGS.deviceToken[0] != '\0') ? CROSSFRONT_SETTINGS.deviceToken : deviceId;
-  const char* cleanId = (strncmp(deviceId, "CF-", 3) == 0) ? (deviceId + 3) : deviceId;
+  const char* token = CROSSFRONT_SETTINGS.deviceToken;
 
-  std::string filesUrl = server + "/api/cf/device/" + cleanId + "/files";
+  std::string filesUrl = server + "/api/cf/device/" + deviceId + "/files";
   std::string jsonBody;
 
   freeink::SecureHttpClient http;
@@ -409,9 +408,8 @@ bool CrossFrontSyncFilesActivity::downloadSingleFile(const FileItem& file) {
     server.pop_back();
   }
 
-  const char* token = (CROSSFRONT_SETTINGS.deviceToken[0] != '\0') ? CROSSFRONT_SETTINGS.deviceToken : deviceId;
-  const char* cleanId = (strncmp(deviceId, "CF-", 3) == 0) ? (deviceId + 3) : deviceId;
-  std::string downloadUrl = server + "/api/cf/device/" + cleanId + "/files/" + file.id + "/download";
+  const char* token = CROSSFRONT_SETTINGS.deviceToken;
+  std::string downloadUrl = server + "/api/cf/device/" + deviceId + "/files/" + file.id + "/download";
 
   auto extraHeaders = makeHeaders(deviceId, token);
 
@@ -487,9 +485,8 @@ void CrossFrontSyncFilesActivity::markFileDone(const std::string& fileId) {
     server.pop_back();
   }
 
-  const char* token = (CROSSFRONT_SETTINGS.deviceToken[0] != '\0') ? CROSSFRONT_SETTINGS.deviceToken : deviceId;
-  const char* cleanId = (strncmp(deviceId, "CF-", 3) == 0) ? (deviceId + 3) : deviceId;
-  std::string doneUrl = server + "/api/cf/device/" + cleanId + "/files/" + fileId + "/done";
+  const char* token = CROSSFRONT_SETTINGS.deviceToken;
+  std::string doneUrl = server + "/api/cf/device/" + deviceId + "/files/" + fileId + "/done";
 
   freeink::SecureHttpClient http;
   http.setTimeout(10000);

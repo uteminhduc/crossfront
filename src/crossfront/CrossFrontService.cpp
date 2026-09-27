@@ -24,7 +24,7 @@ namespace {
 std::vector<std::pair<std::string, std::string>> makeCrossFrontHeaders(const char* deviceId, const char* token) {
   std::vector<std::pair<std::string, std::string>> headers;
   headers.reserve(2);
-  headers.emplace_back("X-Device-Id", deviceId);
+  headers.emplace_back("X-Device-Id", deviceId ? deviceId : "");
   if (token && token[0] != '\0') {
     headers.emplace_back("X-Device-Token", token);
   }
@@ -189,7 +189,7 @@ bool CrossFrontService::fetchSleepImageConditional(unsigned long maxBudgetMs) {
 
   char deviceId[32] = {0};
   CROSSFRONT_SETTINGS.getDeviceId(deviceId, sizeof(deviceId));
-  const char* token = CROSSFRONT_SETTINGS.deviceToken[0] != '\0' ? CROSSFRONT_SETTINGS.deviceToken : deviceId;
+  const char* token = CROSSFRONT_SETTINGS.deviceToken;
 
   std::string server = std::string(serverUrl);
   if (!server.empty() && server.back() == '/') {
@@ -209,7 +209,7 @@ bool CrossFrontService::fetchSleepImageConditional(unsigned long maxBudgetMs) {
 
     const auto err = HttpDownloader::downloadToFile(url, SLEEP_BMP_PATH, nullptr, nullptr, "", "", false,
                                                     httpTimeout, savedEtag, &responseEtag,
-                                                    extraHeaders, &responsePollInterval);
+                                                     extraHeaders, &responsePollInterval);
     if (responsePollInterval != 0xFFFFFFFF &&
         responsePollInterval != CROSSFRONT_SETTINGS.serverPollIntervalSeconds) {
       CROSSFRONT_SETTINGS.serverPollIntervalSeconds = responsePollInterval;
@@ -353,7 +353,7 @@ CrossFrontService::SyncResult CrossFrontService::syncNow(ProgressFn onProgress, 
 
   char deviceId[32] = {0};
   CROSSFRONT_SETTINGS.getDeviceId(deviceId, sizeof(deviceId));
-  const char* token = (CROSSFRONT_SETTINGS.deviceToken[0] != '\0') ? CROSSFRONT_SETTINGS.deviceToken : deviceId;
+  const char* token = CROSSFRONT_SETTINGS.deviceToken;
 
   // 1. Fetch config and update Wi-Fi credentials from web studio
   if (onProgress) {
@@ -562,7 +562,7 @@ CrossFrontService::RotateTokenResult CrossFrontService::rotateToken(const char* 
   if (httpCode >= 200 && httpCode < 300) {
     snprintf(CROSSFRONT_SETTINGS.deviceToken, sizeof(CROSSFRONT_SETTINGS.deviceToken), "%s", newToken);
     CROSSFRONT_SETTINGS.saveToFile();
-    LOG_INF("CF", "rotateToken: Token rotated and saved successfully: %s", newToken);
+    LOG_INF("CF", "rotateToken: Token rotated and saved successfully");
     return RotateTokenResult::OK;
   }
 
