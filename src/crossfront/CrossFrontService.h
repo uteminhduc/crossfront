@@ -12,9 +12,6 @@ class CrossFrontService {
   static constexpr unsigned long DEFAULT_SLEEP_NETWORK_TIMEOUT_MS = 15000;
   static constexpr unsigned long MANUAL_SYNC_TIMEOUT_MS = 30000;
 
-  static std::string getSavedEtag();
-  static void saveEtag(const std::string& etag);
-
   enum class SyncResult : uint8_t {
     OK,
     NO_WIFI_CONFIGURED,
@@ -36,8 +33,8 @@ class CrossFrontService {
   static bool connectWifiQuick(unsigned long timeoutMs = 2500, ProgressFn onProgress = nullptr, void* userData = nullptr);
   static void disconnectWifi();
 
-  // Conditional fetch using ETag (HTTP 304). Returns true if new image downloaded.
-  static bool fetchSleepImageConditional(unsigned long maxBudgetMs = DEFAULT_SLEEP_NETWORK_TIMEOUT_MS);
+  static bool fetchSleepImage(unsigned long maxBudgetMs = DEFAULT_SLEEP_NETWORK_TIMEOUT_MS,
+                              bool* outNetworkOk = nullptr);
 
   // Handles RTC timer wakeup event. Returns true if handled.
   static bool handleTimerWakeup(HalDisplay& display, GfxRenderer& renderer);

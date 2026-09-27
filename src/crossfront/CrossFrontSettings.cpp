@@ -48,6 +48,7 @@ void CrossFrontSettings::toJson(JsonDocument& doc) const {
   if (ebookDir[0] != '\0') doc["ebookDir"] = ebookDir;
   doc["updateInterval"] = updateInterval;
   doc["sleepNetworkTimeoutMs"] = sleepNetworkTimeoutMs;
+  doc["maxSleepFailures"] = maxSleepFailures;
   if (serverPollIntervalSeconds > 0) doc["serverPollIntervalSeconds"] = serverPollIntervalSeconds;
   doc["settingsDirty"] = settingsDirty;
 }
@@ -71,6 +72,7 @@ bool CrossFrontSettings::fromJson(const JsonVariantConst doc) {
   if (webUrl[0] == '\0') copyToField(webUrl, DEFAULT_WEB_URL, sizeof(webUrl));
   updateInterval = validInterval(doc["updateInterval"] | static_cast<uint8_t>(ON_SLEEP));
   sleepNetworkTimeoutMs = validSleepNetworkTimeout(doc["sleepNetworkTimeoutMs"] | static_cast<uint16_t>(15000));
+  maxSleepFailures = doc["maxSleepFailures"] | static_cast<uint8_t>(0);
   serverPollIntervalSeconds = doc["serverPollIntervalSeconds"] | static_cast<uint32_t>(0);
   settingsDirty = doc["settingsDirty"] | false;
   return true;

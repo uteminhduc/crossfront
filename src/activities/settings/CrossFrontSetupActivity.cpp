@@ -104,11 +104,21 @@ std::string CrossFrontSetupActivity::getNetworkWaitLabel(uint16_t timeoutMs) con
   return value;
 }
 
+std::string CrossFrontSetupActivity::getRetryLimitLabel(uint8_t count) const {
+  if (count == 0) {
+    return tr(STR_CROSSFRONT_RETRY_UNLIMITED);
+  }
+  char value[32];
+  snprintf(value, sizeof(value), tr(STR_CROSSFRONT_RETRY_TIMES), static_cast<unsigned>(count));
+  return value;
+}
+
 int CrossFrontSetupActivity::listCount() const {
   switch (viewMode) {
     case ViewMode::MAIN: return MAIN_ITEM_COUNT;
     case ViewMode::INTERVAL: return CrossFrontSettings::UPDATE_INTERVAL_COUNT;
     case ViewMode::NETWORK_WAIT: return WAIT_ITEM_COUNT;
+    case ViewMode::RETRY_LIMIT: return RETRY_ITEM_COUNT;
   }
   return MAIN_ITEM_COUNT;
 }
@@ -122,6 +132,7 @@ int CrossFrontSetupActivity::computeQrSectionHeight() const {
 const char* CrossFrontSetupActivity::headerTitle() const {
   if (viewMode == ViewMode::INTERVAL) return tr(STR_CROSSFRONT_REFRESH_INTERVAL);
   if (viewMode == ViewMode::NETWORK_WAIT) return tr(STR_CROSSFRONT_SLEEP_NETWORK_WAIT);
+  if (viewMode == ViewMode::RETRY_LIMIT) return tr(STR_CROSSFRONT_RETRY_LIMIT);
   return tr(STR_CROSSFRONT_SETUP);
 }
 
@@ -279,42 +290,57 @@ void CrossFrontSetupActivity::buildScreen(UiScreen& screen) {
     rowItems[2].actionValue = 2;
 
     rowItems[3].sectionHeading = nullptr;
-    rowItems[3].label = tr(STR_CROSSFRONT_ROTATE_TOKEN);
-    if (rotateTokenStatus == RotateTokenStatus::ROTATING) {
-      rowValues[3] = tr(STR_CROSSFRONT_ROTATING_TOKEN);
-    } else if (rotateTokenStatus == RotateTokenStatus::FINISHED) {
-      switch (lastRotateResult) {
-        case CrossFrontService::RotateTokenResult::OK:
-          rowValues[3] = tr(STR_CROSSFRONT_ROTATE_OK);
-          break;
-        case CrossFrontService::RotateTokenResult::NO_WIFI_CONFIGURED:
-          rowValues[3] = tr(STR_CROSSFRONT_ERR_NO_WIFI);
-          break;
-        case CrossFrontService::RotateTokenResult::WIFI_CONNECT_FAILED:
-          rowValues[3] = tr(STR_CROSSFRONT_ERR_WIFI);
-          break;
-        case CrossFrontService::RotateTokenResult::SERVER_FAILED:
-        default:
-          rowValues[3] = tr(STR_CROSSFRONT_ERR_SERVER);
-          break;
-      }
-    } else {
-      rowValues[3] = "";
-    }
-    rowItems[3].value = rowValues[3].empty() ? nullptr : rowValues[3].c_str();
+    rowItems[3].label = tr(STR_CROSSFRONT_RETRY_LIMIT);
+    rowValues[3] = getRetryLimitLabel(CROSSFRONT_SETTINGS.maxSleepFailures);
+    rowItems[3].value = rowValues[3].c_str();
     rowItems[3].actionValue = 3;
 
     rowItems[4].sectionHeading = nullptr;
-    rowItems[4].label = tr(STR_CROSSFRONT_SYNC_FILES);
-    rowValues[4] = "";
-    rowItems[4].value = nullptr;
+    rowItems[4].label = tr(STR_CROSSFRONT_ROTATE_TOKEN);
+    if (rotateTokenStatus == RotateTokenStatus::ROTATING) {
+      rowValues[4] = tr(STR_CROSSFRONT_ROTATING_TOKEN);
+    } else if (rotateTokenStatus == RotateTokenStatus::FINISHED) {
+      switch (lastRotateResult) {
+        case CrossFrontService::RotateTokenResult::OK:
+          rowValues[4] = tr(STR_CROSSFRONT_ROTATE_OK);
+          break;
+        case CrossFrontService::RotateTokenResult::NO_WIFI_CONFIGURED:
+          rowValues[4] = tr(STR_CROSSFRONT_ERR_NO_WIFI);
+          break;
+        case CrossFrontService::RotateTokenResult::WIFI_CONNECT_FAILED:
+          rowValues[4] = tr(STR_CROSSFRONT_ERR_WIFI);
+          break;
+        case CrossFrontService::RotateTokenResult::SERVER_FAILED:
+        default:
+          rowValues[4] = tr(STR_CROSSFRONT_ERR_SERVER);
+          break;
+      }
+    } else {
+      rowValues[4] = "";
+    }
+    rowItems[4].value = rowValues[4].empty() ? nullptr : rowValues[4].c_str();
     rowItems[4].actionValue = 4;
+
+    rowItems[5].sectionHeading = nullptr;
+    rowItems[5].label = tr(STR_CROSSFRONT_SYNC_FILES);
+    rowValues[5] = "";
+    rowItems[5].value = nullptr;
+    rowItems[5].actionValue = 5;
   } else if (viewMode == ViewMode::INTERVAL) {
     for (int index = 0; index < CrossFrontSettings::UPDATE_INTERVAL_COUNT; ++index) {
       rowItems[index].sectionHeading = nullptr;
       rowItems[index].label = getIntervalLabel(static_cast<uint8_t>(index));
       rowValues[index] = (CROSSFRONT_SETTINGS.updateInterval == index) ? tr(STR_SELECTED) : "";
       rowItems[index].value = rowValues[index].empty() ? nullptr : rowValues[index].c_str();
+      rowItems[index].actionValue = static_cast<int16_t>(index);
+    }
+  } else if (viewMode == ViewMode::RETRY_LIMIT) {
+    constexpr uint8_t retryOptions[RETRY_ITEM_COUNT] = {0, 3, 5, 10};
+    for (int index = 0; index < RETRY_ITEM_COUNT; ++index) {
+      rowItems[index].sectionHeading = nullptr;
+      rowValues[index] = getRetryLimitLabel(retryOptions[index]);
+      rowItems[index].label = rowValues[index].c_str();
+      rowItems[index].value = (CROSSFRONT_SETTINGS.maxSleepFailures == retryOptions[index]) ? tr(STR_SELECTED) : nullptr;
       rowItems[index].actionValue = static_cast<int16_t>(index);
     }
   } else {
@@ -364,8 +390,19 @@ void CrossFrontSetupActivity::activateIndex(const int index) {
       }
       requestUpdate(true);
     } else if (index == 3) {
-      promptRotateToken();
+      viewMode = ViewMode::RETRY_LIMIT;
+      nav.reset();
+      constexpr uint8_t retryOptions[RETRY_ITEM_COUNT] = {0, 3, 5, 10};
+      for (int i = 0; i < RETRY_ITEM_COUNT; ++i) {
+        if (retryOptions[i] == CROSSFRONT_SETTINGS.maxSleepFailures) {
+          nav.selected = i;
+          break;
+        }
+      }
+      requestUpdate(true);
     } else if (index == 4) {
+      promptRotateToken();
+    } else if (index == 5) {
       startActivityForResult(
           makeUniqueNoThrow<CrossFrontSyncFilesActivity>(renderer, mappedInput),
           [this](const ActivityResult& /*result*/) {
@@ -375,13 +412,17 @@ void CrossFrontSetupActivity::activateIndex(const int index) {
     return;
   }
 
-  const int returnRow = (viewMode == ViewMode::INTERVAL) ? 1 : 2;
+  const int returnRow = (viewMode == ViewMode::INTERVAL) ? 1 : (viewMode == ViewMode::NETWORK_WAIT) ? 2 : 3;
   if (viewMode == ViewMode::INTERVAL) {
     CROSSFRONT_SETTINGS.updateInterval = static_cast<CrossFrontSettings::UpdateInterval>(index);
-  } else {
+  } else if (viewMode == ViewMode::NETWORK_WAIT) {
     constexpr uint16_t waitOptionsMs[WAIT_ITEM_COUNT] = {15000, 20000, 25000, 30000};
     if (index < 0 || index >= WAIT_ITEM_COUNT) return;
     CROSSFRONT_SETTINGS.sleepNetworkTimeoutMs = waitOptionsMs[index];
+  } else if (viewMode == ViewMode::RETRY_LIMIT) {
+    constexpr uint8_t retryOptions[RETRY_ITEM_COUNT] = {0, 3, 5, 10};
+    if (index < 0 || index >= RETRY_ITEM_COUNT) return;
+    CROSSFRONT_SETTINGS.maxSleepFailures = retryOptions[index];
   }
 
   CROSSFRONT_SETTINGS.settingsDirty = true;
@@ -394,7 +435,7 @@ void CrossFrontSetupActivity::activateIndex(const int index) {
 
 void CrossFrontSetupActivity::onBackButton() {
   if (viewMode != ViewMode::MAIN) {
-    const int returnRow = (viewMode == ViewMode::INTERVAL) ? 1 : 2;
+    const int returnRow = (viewMode == ViewMode::INTERVAL) ? 1 : (viewMode == ViewMode::NETWORK_WAIT) ? 2 : 3;
     viewMode = ViewMode::MAIN;
     nav.reset();
     nav.selected = returnRow;

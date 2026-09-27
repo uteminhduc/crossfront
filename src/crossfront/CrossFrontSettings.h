@@ -42,6 +42,7 @@ class CrossFrontSettings : public PersistableStore<CrossFrontSettings> {
   char ebookDir[64] = "/crossfront-ebooks";
   uint8_t updateInterval = ON_SLEEP;
   uint16_t sleepNetworkTimeoutMs = 15000;
+  uint8_t maxSleepFailures = 0;
   uint32_t serverPollIntervalSeconds = 0;
   bool settingsDirty = false;
 

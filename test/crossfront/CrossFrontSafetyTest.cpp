@@ -8,6 +8,7 @@
 
 #include "crossfront/CrossFrontCrypto.h"
 #include "crossfront/CrossFrontFileSafety.h"
+#include "crossfront/SleepImageRequest.h"
 
 extern "C" int esp_read_mac(uint8_t* mac, int) {
   constexpr std::array<uint8_t, 6> hardwareMac = {0x00, 0x1A, 0x2B, 0xC3, 0xD4, 0xE5};
@@ -67,6 +68,22 @@ TEST(CrossFrontCrypto, LongTokenIsTerminatedAndUsesSafeAlphabet) {
   crossfront::generateRandomToken(buffer.data(), 32);
   EXPECT_EQ(std::string(buffer.data()), std::string(32, '0'));
   EXPECT_EQ(buffer.back(), '!');
+}
+
+TEST(CrossFrontSleepImage, UsesCanonicalDevicePathWithoutCacheNonce) {
+  const std::string server = "https://cf-api.pocketgo.org";
+  const std::string url = crossfront::sleepImageRequestUrl(server, "7CE8B18EF308");
+  EXPECT_EQ(url, "https://cf-api.pocketgo.org/api/cf/device/7CE8B18EF308/sleep.bmp");
+  EXPECT_EQ(url.find("?v="), std::string::npos);
+  EXPECT_EQ(url.find("token"), std::string::npos);
+}
+
+TEST(CrossFrontSleepImage, DiscardsStaleBitmapEtagAndBackupBeforeFetch) {
+  FakeStorage storage{{{"/.crosspoint/cf_sleep.bmp", "old"}, {"/.crosspoint/cf_sleep.etag", "old-etag"},
+                       {"/.crosspoint/cf_sleep.bmp.bak", "older"}}, ""};
+  crossfront::discardSleepImageCache(storage, "/.crosspoint/cf_sleep.bmp", "/.crosspoint/cf_sleep.etag",
+                                    "/.crosspoint/cf_sleep.bmp.bak");
+  EXPECT_TRUE(storage.files.empty());
 }
 
 TEST(CrossFrontFileSafety, RejectsUnsafeAssignmentIdsBeforeUrlConstruction) {

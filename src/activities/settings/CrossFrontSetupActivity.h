@@ -8,8 +8,9 @@
 
 class CrossFrontSetupActivity final : public UiListActivity {
  public:
-  static constexpr int MAIN_ITEM_COUNT = 5;
+  static constexpr int MAIN_ITEM_COUNT = 6;
   static constexpr int WAIT_ITEM_COUNT = 4;
+  static constexpr int RETRY_ITEM_COUNT = 4;
   static constexpr int MAX_ITEM_COUNT = CrossFrontSettings::UPDATE_INTERVAL_COUNT;
 
   explicit CrossFrontSetupActivity(GfxRenderer& renderer, MappedInputManager& mappedInput);
@@ -35,10 +36,11 @@ class CrossFrontSetupActivity final : public UiListActivity {
   void handleSyncStep(CrossFrontService::SyncStep step, const char* detail);
   const char* getIntervalLabel(uint8_t interval) const;
   std::string getNetworkWaitLabel(uint16_t timeoutMs) const;
+  std::string getRetryLimitLabel(uint8_t count) const;
   std::string getFriendlyModelName() const;
   int computeQrSectionHeight() const;
 
-  enum class ViewMode : uint8_t { MAIN, INTERVAL, NETWORK_WAIT };
+  enum class ViewMode : uint8_t { MAIN, INTERVAL, NETWORK_WAIT, RETRY_LIMIT };
   ViewMode viewMode = ViewMode::MAIN;
 
   char deviceId[32] = {0};
