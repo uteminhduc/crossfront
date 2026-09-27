@@ -74,9 +74,7 @@ std::string CrossFrontSetupActivity::getPairingUrl() const {
     base.pop_back();
   }
 
-  const char* cleanId = (strncmp(deviceId, "CF-", 3) == 0) ? (deviceId + 3) : deviceId;
-
-  return base + "/connect?d=" + cleanId +
+  return base + "/connect?d=" + deviceId +
          "&t=" + CROSSFRONT_SETTINGS.deviceToken +
          "&m=" + getFriendlyModelName();
 }
@@ -170,8 +168,6 @@ void CrossFrontSetupActivity::drawChrome() {
   // 2. Left side: Web App, Device ID, and Token
   const int leftX = 32;
   const int indentX = leftX + 12;
-  const char* displayDeviceId = (strncmp(deviceId, "CF-", 3) == 0) ? (deviceId + 3) : deviceId;
-
   // 2a. Web App Address (above Device ID)
   const int webLabelY = qrY + 6;
   renderer.drawText(UI_10_FONT_ID, leftX, webLabelY, tr(STR_CROSSFRONT_WEB_URL), true, EpdFontFamily::REGULAR);
@@ -182,7 +178,7 @@ void CrossFrontSetupActivity::drawChrome() {
   const int deviceLabelY = webValueY + 40;
   renderer.drawText(UI_10_FONT_ID, leftX, deviceLabelY, tr(STR_CROSSFRONT_DEVICE_ID), true, EpdFontFamily::REGULAR);
   const int deviceValueY = deviceLabelY + 22;
-  renderer.drawText(UI_12_FONT_ID, indentX, deviceValueY, displayDeviceId, true, EpdFontFamily::BOLD);
+  renderer.drawText(UI_12_FONT_ID, indentX, deviceValueY, deviceId, true, EpdFontFamily::BOLD);
 
   // 2c. Token (identical gap)
   const int tokenLabelY = deviceValueY + 40;

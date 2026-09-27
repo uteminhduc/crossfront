@@ -121,6 +121,11 @@ Never invoke or probe `clang-format` directly. The repository wrapper is the onl
   * `gh_release_rc`: Release candidate (LOG_LEVEL=1)
   * `slim`: Minimal build (no serial logging)
 
+`CROSSPOINT_VERSION` is injected by `scripts/git_branch.py` for `default`,
+`sticky`, and every environment whose name ends with `_rc`. Do not add a
+second `-DCROSSPOINT_VERSION` to those environments; release-only environments
+keep their explicit version flag in `platformio.ini`.
+
 ### Critical Build Flags
 
 These flags in `platformio.ini` fundamentally affect firmware behavior:

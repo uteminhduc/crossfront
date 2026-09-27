@@ -200,8 +200,7 @@ bool CrossFrontService::fetchSleepImageConditional(unsigned long maxBudgetMs) {
   int httpTimeout = (elapsed < maxBudgetMs) ? static_cast<int>(maxBudgetMs - elapsed) : 0;
   bool hasNewImage = false;
   if (httpTimeout >= 1000) {
-    const char* cleanId = (strncmp(deviceId, "CF-", 3) == 0) ? (deviceId + 3) : deviceId;
-    std::string url = server + "/api/cf/device/" + cleanId + "/sleep.bmp";
+    std::string url = server + "/api/cf/device/" + deviceId + "/sleep.bmp";
     LOG_INF("CF", "Conditional fetch from %s (etag: %s, timeout: %dms)", url.c_str(), savedEtag.c_str(), httpTimeout);
 
     std::string responseEtag;
@@ -368,8 +367,7 @@ CrossFrontService::SyncResult CrossFrontService::syncNow(ProgressFn onProgress, 
     return SyncResult::TIMEOUT;
   }
 
-  const char* cleanId = (strncmp(deviceId, "CF-", 3) == 0) ? (deviceId + 3) : deviceId;
-  std::string configUrl = server + "/api/cf/device/" + cleanId + "/config";
+  std::string configUrl = server + "/api/cf/device/" + deviceId + "/config";
   std::string jsonBody;
   bool configOk = false;
   freeink::SecureHttpClient http;
