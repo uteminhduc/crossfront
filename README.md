@@ -29,12 +29,9 @@ CrossFront v1.0 provides an ESP32-C3 binary for **Xteink X3 Global and Xteink X4
 
 #### CrossFront v1.0 — [Release page](https://github.com/uteminhduc/crossfront/releases/tag/v1.0)
 
-The files below work on **Xteink X3 Global and Xteink X4** because both use the same ESP32-C3 binary:
-
-Only the CrossPoint base versions listed below are packaged for CrossFront v1.0.
+This CrossPoint 1.6.5rc-based firmware works on **Xteink X3 Global and Xteink X4** because both use the same ESP32-C3 binary:
 
 - **CrossPoint 1.6.5rc** — X3 Global (tested) / X4 (untested): [Download `crosspoint-1.6.5rc-x3-x4-cf1.0.bin`](https://github.com/uteminhduc/crossfront/releases/download/v1.0/crosspoint-1.6.5rc-x3-x4-cf1.0.bin)
-- **CrossPoint 1.6.0 Stable** — X3 Global (tested) / X4 (untested): [Download `crosspoint-1.6.0-x3-x4-cf1.0.bin`](https://github.com/uteminhduc/crossfront/releases/download/v1.0/crosspoint-1.6.0-x3-x4-cf1.0.bin)
 
 ---
 
