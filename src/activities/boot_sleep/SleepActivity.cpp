@@ -571,6 +571,23 @@ void SleepActivity::onEnter() {
   }
 }
 
+void SleepActivity::loop() {
+  if (stayAwake && SETTINGS.sleepScreen == CrossPointSettings::SLEEP_SCREEN_MODE::CROSSFRONT) {
+    const uint32_t intervalSeconds = CROSSFRONT_SETTINGS.getEffectiveUpdateIntervalSeconds();
+    if (intervalSeconds > 0 && (millis() - lastCrossFrontRefreshMs) / 1000UL >= intervalSeconds) {
+      LOG_INF("CF", "Awake preview refresh due");
+      const bool refreshed = CrossFrontService::renderSleepScreen(renderer);
+      lastCrossFrontRefreshMs = millis();
+      LOG_INF("CF", "Awake preview refresh finished (new image: %s)", refreshed ? "yes" : "no");
+    }
+  }
+
+  if (stayAwake && (mappedInput.wasReleased(MappedInputManager::Button::Back) ||
+                    mappedInput.wasReleased(MappedInputManager::Button::Confirm))) {
+    finish();
+  }
+}
+
 void SleepActivity::renderCustomSleepScreen() const {
   // Look for sleep.bmp on the root of the sd card to determine if we should
   // render a custom sleep screen instead of the default.
@@ -917,8 +934,9 @@ void SleepActivity::renderCrossFrontFallbackScreen() const {
   renderer.displayBuffer(HalDisplay::HALF_REFRESH);
 }
 
-void SleepActivity::renderCrossFrontSleepScreen() const {
+void SleepActivity::renderCrossFrontSleepScreen() {
   if (!CrossFrontService::renderSleepScreen(renderer)) {
     renderCrossFrontFallbackScreen();
   }
+  if (stayAwake) lastCrossFrontRefreshMs = millis();
 }

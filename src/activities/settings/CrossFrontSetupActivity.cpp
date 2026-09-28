@@ -15,6 +15,7 @@
 
 #include "MappedInputManager.h"
 #include "WifiCredentialStore.h"
+#include "activities/boot_sleep/SleepActivity.h"
 #include "activities/util/ConfirmationActivity.h"
 #include "activities/settings/CrossFrontSyncFilesActivity.h"
 #include "components/UITheme.h"
@@ -32,6 +33,39 @@ namespace {
 constexpr int QR_SIZE = 184;
 constexpr int QR_PAD = 16;
 constexpr int QR_RIGHT_PAD = 24;
+constexpr int PRIVACY_TILE_SIZE = 8;
+
+uint32_t privacyNoise(const int x, const int y) {
+  uint32_t value = static_cast<uint32_t>(x) * 0x9E3779B1U + static_cast<uint32_t>(y) * 0x85EBCA77U;
+  value ^= value >> 16;
+  value *= 0x7FEB352DU;
+  value ^= value >> 15;
+  value *= 0x846CA68BU;
+  return value ^ (value >> 16);
+}
+
+void drawSoftQrPlaceholder(GfxRenderer& renderer, const int x, const int y, const int width, const int height) {
+  renderer.fillRect(x, y, width, height, false);
+  for (int tileY = 0; tileY < height; tileY += PRIVACY_TILE_SIZE) {
+    for (int tileX = 0; tileX < width; tileX += PRIVACY_TILE_SIZE) {
+      const uint32_t noise = privacyNoise(tileX / PRIVACY_TILE_SIZE, tileY / PRIVACY_TILE_SIZE);
+      const uint32_t shade = noise & 15U;
+      const int tileWidth = std::min(PRIVACY_TILE_SIZE, width - tileX);
+      const int tileHeight = std::min(PRIVACY_TILE_SIZE, height - tileY);
+      if (shade < 2) {
+        renderer.fillRectDither(x + tileX, y + tileY, tileWidth, tileHeight, Color::DarkGray);
+      } else if (shade < 8) {
+        renderer.fillRectDither(x + tileX, y + tileY, tileWidth, tileHeight, Color::LightGray);
+      }
+    }
+  }
+}
+
+void drawSoftTextPlaceholder(GfxRenderer& renderer, const int x, const int y, const int width) {
+  renderer.fillRect(x, y, width, 22, false);
+  renderer.fillRectDither(x + 8, y + 4, width - 42, 7, Color::LightGray);
+  renderer.fillRectDither(x + 3, y + 14, width - 68, 5, Color::LightGray);
+}
 
 std::string formatShortSsid(const std::string& ssid, size_t maxLen = 10) {
   if (ssid.length() <= maxLen) return ssid;
@@ -142,6 +176,7 @@ void CrossFrontSetupActivity::onEnter() {
   syncStatus = SyncStatus::IDLE;
   syncDetail = "";
   rotateTokenStatus = RotateTokenStatus::IDLE;
+  pairingInfoVisible = false;
   currentSyncStep = CrossFrontService::SyncStep::CONNECTING_WIFI;
   lastSyncResult = CrossFrontService::SyncResult::OK;
   viewMode = ViewMode::MAIN;
@@ -162,6 +197,14 @@ void CrossFrontSetupActivity::onExit() {
   UiListActivity::onExit();
 }
 
+void CrossFrontSetupActivity::loop() {
+  UiListActivity::loop();
+  if (pairingInfoVisible && millis() - pairingInfoShownAtMs >= 30000UL) {
+    pairingInfoVisible = false;
+    requestUpdate(true);
+  }
+}
+
 void CrossFrontSetupActivity::drawChrome() {
   UiListActivity::drawChrome();
   if (viewMode != ViewMode::MAIN) return;
@@ -174,7 +217,11 @@ void CrossFrontSetupActivity::drawChrome() {
   // 1. Right side: QR Code
   const int qrX = pageWidth - QR_SIZE - QR_RIGHT_PAD;
   const Rect qrBounds(qrX, qrY, QR_SIZE, QR_SIZE);
-  QrUtils::drawQrCode(renderer, qrBounds, getPairingUrl());
+  if (pairingInfoVisible) {
+    QrUtils::drawQrCode(renderer, qrBounds, getPairingUrl());
+  } else {
+    drawSoftQrPlaceholder(renderer, qrX, qrY, QR_SIZE, QR_SIZE);
+  }
 
   // 2. Left side: Web App, Device ID, and Token
   const int leftX = 32;
@@ -189,13 +236,21 @@ void CrossFrontSetupActivity::drawChrome() {
   const int deviceLabelY = webValueY + 40;
   renderer.drawText(UI_10_FONT_ID, leftX, deviceLabelY, tr(STR_CROSSFRONT_DEVICE_ID), true, EpdFontFamily::REGULAR);
   const int deviceValueY = deviceLabelY + 22;
-  renderer.drawText(UI_12_FONT_ID, indentX, deviceValueY, deviceId, true, EpdFontFamily::BOLD);
+  if (pairingInfoVisible) {
+    renderer.drawText(UI_12_FONT_ID, indentX, deviceValueY, deviceId, true, EpdFontFamily::BOLD);
+  } else {
+    drawSoftTextPlaceholder(renderer, indentX, deviceValueY - 3, 176);
+  }
 
   // 2c. Token (identical gap)
   const int tokenLabelY = deviceValueY + 40;
   renderer.drawText(UI_10_FONT_ID, leftX, tokenLabelY, tr(STR_CROSSFRONT_TOKEN), true, EpdFontFamily::REGULAR);
   const int tokenValueY = tokenLabelY + 22;
-  renderer.drawText(UI_12_FONT_ID, indentX, tokenValueY, CROSSFRONT_SETTINGS.deviceToken, true, EpdFontFamily::BOLD);
+  if (pairingInfoVisible) {
+    renderer.drawText(UI_12_FONT_ID, indentX, tokenValueY, CROSSFRONT_SETTINGS.deviceToken, true, EpdFontFamily::BOLD);
+  } else {
+    drawSoftTextPlaceholder(renderer, indentX, tokenValueY - 3, 176);
+  }
 
   // Divider line
   const int dividerY = qrY + QR_SIZE + QR_PAD;
@@ -278,54 +333,64 @@ void CrossFrontSetupActivity::buildScreen(UiScreen& screen) {
     rowItems[0].actionValue = 0;
 
     rowItems[1].sectionHeading = nullptr;
-    rowItems[1].label = tr(STR_CROSSFRONT_REFRESH_INTERVAL);
-    rowValues[1] = getIntervalLabel(CROSSFRONT_SETTINGS.updateInterval);
-    rowItems[1].value = rowValues[1].c_str();
+    rowItems[1].label = tr(STR_CROSSFRONT_SHOW_SLEEP_SCREEN);
+    rowItems[1].value = tr(STR_CROSSFRONT_STAYS_AWAKE);
     rowItems[1].actionValue = 1;
 
     rowItems[2].sectionHeading = nullptr;
-    rowItems[2].label = tr(STR_CROSSFRONT_SLEEP_NETWORK_WAIT);
-    rowValues[2] = getNetworkWaitLabel(CROSSFRONT_SETTINGS.sleepNetworkTimeoutMs);
+    rowItems[2].label = tr(STR_CROSSFRONT_REFRESH_INTERVAL);
+    rowValues[2] = getIntervalLabel(CROSSFRONT_SETTINGS.updateInterval);
     rowItems[2].value = rowValues[2].c_str();
     rowItems[2].actionValue = 2;
 
     rowItems[3].sectionHeading = nullptr;
-    rowItems[3].label = tr(STR_CROSSFRONT_RETRY_LIMIT);
-    rowValues[3] = getRetryLimitLabel(CROSSFRONT_SETTINGS.maxSleepFailures);
+    rowItems[3].label = tr(STR_CROSSFRONT_SLEEP_NETWORK_WAIT);
+    rowValues[3] = getNetworkWaitLabel(CROSSFRONT_SETTINGS.sleepNetworkTimeoutMs);
     rowItems[3].value = rowValues[3].c_str();
     rowItems[3].actionValue = 3;
 
     rowItems[4].sectionHeading = nullptr;
-    rowItems[4].label = tr(STR_CROSSFRONT_ROTATE_TOKEN);
-    if (rotateTokenStatus == RotateTokenStatus::ROTATING) {
-      rowValues[4] = tr(STR_CROSSFRONT_ROTATING_TOKEN);
-    } else if (rotateTokenStatus == RotateTokenStatus::FINISHED) {
-      switch (lastRotateResult) {
-        case CrossFrontService::RotateTokenResult::OK:
-          rowValues[4] = tr(STR_CROSSFRONT_ROTATE_OK);
-          break;
-        case CrossFrontService::RotateTokenResult::NO_WIFI_CONFIGURED:
-          rowValues[4] = tr(STR_CROSSFRONT_ERR_NO_WIFI);
-          break;
-        case CrossFrontService::RotateTokenResult::WIFI_CONNECT_FAILED:
-          rowValues[4] = tr(STR_CROSSFRONT_ERR_WIFI);
-          break;
-        case CrossFrontService::RotateTokenResult::SERVER_FAILED:
-        default:
-          rowValues[4] = tr(STR_CROSSFRONT_ERR_SERVER);
-          break;
-      }
-    } else {
-      rowValues[4] = "";
-    }
-    rowItems[4].value = rowValues[4].empty() ? nullptr : rowValues[4].c_str();
+    rowItems[4].label = tr(STR_CROSSFRONT_RETRY_LIMIT);
+    rowValues[4] = getRetryLimitLabel(CROSSFRONT_SETTINGS.maxSleepFailures);
+    rowItems[4].value = rowValues[4].c_str();
     rowItems[4].actionValue = 4;
 
     rowItems[5].sectionHeading = nullptr;
-    rowItems[5].label = tr(STR_CROSSFRONT_SYNC_FILES);
-    rowValues[5] = "";
-    rowItems[5].value = nullptr;
+    rowItems[5].label = tr(STR_CROSSFRONT_ROTATE_TOKEN);
+    if (rotateTokenStatus == RotateTokenStatus::ROTATING) {
+      rowValues[5] = tr(STR_CROSSFRONT_ROTATING_TOKEN);
+    } else if (rotateTokenStatus == RotateTokenStatus::FINISHED) {
+      switch (lastRotateResult) {
+        case CrossFrontService::RotateTokenResult::OK:
+          rowValues[5] = tr(STR_CROSSFRONT_ROTATE_OK);
+          break;
+        case CrossFrontService::RotateTokenResult::NO_WIFI_CONFIGURED:
+          rowValues[5] = tr(STR_CROSSFRONT_ERR_NO_WIFI);
+          break;
+        case CrossFrontService::RotateTokenResult::WIFI_CONNECT_FAILED:
+          rowValues[5] = tr(STR_CROSSFRONT_ERR_WIFI);
+          break;
+        case CrossFrontService::RotateTokenResult::SERVER_FAILED:
+        default:
+          rowValues[5] = tr(STR_CROSSFRONT_ERR_SERVER);
+          break;
+      }
+    } else {
+      rowValues[5] = "";
+    }
+    rowItems[5].value = rowValues[5].empty() ? nullptr : rowValues[5].c_str();
     rowItems[5].actionValue = 5;
+
+    rowItems[6].sectionHeading = nullptr;
+    rowItems[6].label = tr(STR_CROSSFRONT_SYNC_FILES);
+    rowValues[6] = "";
+    rowItems[6].value = nullptr;
+    rowItems[6].actionValue = 6;
+
+    rowItems[7].sectionHeading = nullptr;
+    rowItems[7].label = tr(STR_CROSSFRONT_REVEAL_PAIRING_INFO);
+    rowItems[7].value = nullptr;
+    rowItems[7].actionValue = 7;
   } else if (viewMode == ViewMode::INTERVAL) {
     for (int index = 0; index < CrossFrontSettings::UPDATE_INTERVAL_COUNT; ++index) {
       rowItems[index].sectionHeading = nullptr;
@@ -374,11 +439,15 @@ void CrossFrontSetupActivity::activateIndex(const int index) {
     if (index == 0) {
       performManualSync();
     } else if (index == 1) {
+      startActivityForResult(
+          makeUniqueNoThrow<SleepActivity>(renderer, mappedInput, false, true),
+          [this](const ActivityResult& /*result*/) { requestUpdate(true); });
+    } else if (index == 2) {
       viewMode = ViewMode::INTERVAL;
       nav.reset();
       nav.selected = CROSSFRONT_SETTINGS.updateInterval;
       requestUpdate(true);
-    } else if (index == 2) {
+    } else if (index == 3) {
       viewMode = ViewMode::NETWORK_WAIT;
       nav.reset();
       constexpr uint16_t waitOptionsMs[WAIT_ITEM_COUNT] = {15000, 20000, 25000, 30000};
@@ -389,7 +458,7 @@ void CrossFrontSetupActivity::activateIndex(const int index) {
         }
       }
       requestUpdate(true);
-    } else if (index == 3) {
+    } else if (index == 4) {
       viewMode = ViewMode::RETRY_LIMIT;
       nav.reset();
       constexpr uint8_t retryOptions[RETRY_ITEM_COUNT] = {0, 3, 5, 10};
@@ -400,19 +469,23 @@ void CrossFrontSetupActivity::activateIndex(const int index) {
         }
       }
       requestUpdate(true);
-    } else if (index == 4) {
-      promptRotateToken();
     } else if (index == 5) {
+      promptRotateToken();
+    } else if (index == 6) {
       startActivityForResult(
           makeUniqueNoThrow<CrossFrontSyncFilesActivity>(renderer, mappedInput),
           [this](const ActivityResult& /*result*/) {
             requestUpdate(true);
           });
+    } else if (index == 7) {
+      pairingInfoVisible = true;
+      pairingInfoShownAtMs = millis();
+      requestUpdate(true);
     }
     return;
   }
 
-  const int returnRow = (viewMode == ViewMode::INTERVAL) ? 1 : (viewMode == ViewMode::NETWORK_WAIT) ? 2 : 3;
+  const int returnRow = (viewMode == ViewMode::INTERVAL) ? 2 : (viewMode == ViewMode::NETWORK_WAIT) ? 3 : 4;
   if (viewMode == ViewMode::INTERVAL) {
     CROSSFRONT_SETTINGS.updateInterval = static_cast<CrossFrontSettings::UpdateInterval>(index);
   } else if (viewMode == ViewMode::NETWORK_WAIT) {
@@ -435,7 +508,7 @@ void CrossFrontSetupActivity::activateIndex(const int index) {
 
 void CrossFrontSetupActivity::onBackButton() {
   if (viewMode != ViewMode::MAIN) {
-    const int returnRow = (viewMode == ViewMode::INTERVAL) ? 1 : (viewMode == ViewMode::NETWORK_WAIT) ? 2 : 3;
+    const int returnRow = (viewMode == ViewMode::INTERVAL) ? 2 : (viewMode == ViewMode::NETWORK_WAIT) ? 3 : 4;
     viewMode = ViewMode::MAIN;
     nav.reset();
     nav.selected = returnRow;

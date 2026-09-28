@@ -7,6 +7,8 @@ Mission: Provide a lightweight, high-performance reading experience focused on E
 
 The backend chooses a `cf_sleep_screens` record before returning `/sleep.bmp`; firmware stays screen-agnostic and keeps the existing BMP/ETag cache. `/config` carries the device `config` object and the `wifiList` DTO key. File sync endpoints return `cf_media_assignments` IDs, so `/done` posts that assignment ID and never marks a media record globally downloaded.
 
+CrossFront Setup can open the configured Sleep screen as an awake preview. The preview reuses `SleepActivity`, blocks auto-sleep while active, refreshes the image using the effective CrossFront interval while awake, and returns to Setup on Back or Confirm; normal Sleep continues to enter deep sleep. Pairing QR, device ID, and token are privacy-mosaicked by default on the Setup screen.
+
 ### JSON naming
 
 CrossFront DTOs use lowerCamelCase (`wifiList`, `sleepNetworkTimeoutMs`, `ebookDir`, `deviceId`, `oldToken`, `newToken`, `fileName`). C++ member and local variable naming remains the firmware's normal C++ convention. PocketBase record fields such as `device_id` and `screen_mode` remain snake_case because those names are defined by the collection schema.

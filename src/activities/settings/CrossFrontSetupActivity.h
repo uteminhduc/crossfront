@@ -8,7 +8,7 @@
 
 class CrossFrontSetupActivity final : public UiListActivity {
  public:
-  static constexpr int MAIN_ITEM_COUNT = 6;
+  static constexpr int MAIN_ITEM_COUNT = 8;
   static constexpr int WAIT_ITEM_COUNT = 4;
   static constexpr int RETRY_ITEM_COUNT = 4;
   static constexpr int MAX_ITEM_COUNT = CrossFrontSettings::UPDATE_INTERVAL_COUNT;
@@ -17,6 +17,7 @@ class CrossFrontSetupActivity final : public UiListActivity {
 
   void onEnter() override;
   void onExit() override;
+  void loop() override;
 
  protected:
   int listCount() const override;
@@ -44,6 +45,8 @@ class CrossFrontSetupActivity final : public UiListActivity {
   ViewMode viewMode = ViewMode::MAIN;
 
   char deviceId[32] = {0};
+  bool pairingInfoVisible = false;
+  unsigned long pairingInfoShownAtMs = 0;
   enum class SyncStatus : uint8_t { IDLE, SYNCING, FINISHED };
   SyncStatus syncStatus = SyncStatus::IDLE;
   std::string syncDetail = "";
