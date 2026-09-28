@@ -1,6 +1,6 @@
 # CrossPoint Reader — CrossFront Edition
 
-This is a custom fork of [CrossPoint Reader](https://github.com/crosspoint-reader/crosspoint-reader) enhanced with CrossFront cloud integration. Design custom sleep screens, manage devices, and sync layouts via the [CrossFront Web Studio](https://cf.pocketgo.org).
+This is a custom fork of [CrossPoint Reader](https://github.com/crosspoint-reader/crosspoint-reader) enhanced with CrossFront cloud integration. Design custom sleep screens, manage devices, and sync layouts via the [CrossFront Web Studio](https://cf.pocketgo.org). The current source version is **CrossFront 1.2**.
 
 ### Key Features / Tính Năng Nổi Bật
 
@@ -8,17 +8,21 @@ This is a custom fork of [CrossPoint Reader](https://github.com/crosspoint-reade
 
 - **Dynamic Sleep Screens**: Create animated sleep screens in CrossFront Web Studio and sync them to your device over Wi-Fi.
 - **Automatic Wi-Fi Sync**: Sync new screens without manually entering settings on the device.
+- **Awake Sleep-Screen Preview**: Preview the configured screen without entering deep sleep; the preview refreshes on the configured interval.
+- **Protected Pairing Details**: QR code, device ID, and token are hidden by default and can be revealed briefly when pairing.
 - **Smart Wakeup Schedule (X3 only)**: Schedule automatic screen updates and quiet hours to save battery. This is not available on the X4 when running on battery.
 
 **Tiếng Việt**:
 
 - **Màn hình chờ động**: Tự tạo màn hình chờ động trên CrossFront Web Studio và đồng bộ với thiết bị qua Wi-Fi.
 - **Đồng bộ Wi-Fi tự động**: Đồng bộ màn hình mới mà không cần nhập thủ công cài đặt trên thiết bị.
+- **Xem trước màn hình chờ khi máy vẫn hoạt động**: Xem màn hình đã cấu hình mà không vào deep sleep; ảnh được làm mới theo chu kỳ đã đặt.
+- **Ẩn thông tin ghép nối**: Mã QR, mã thiết bị và token được che mặc định, có thể hiện tạm thời khi cần ghép nối.
 - **Lịch thức thông minh (chỉ X3)**: Tự động cập nhật màn hình theo lịch và thiết lập giờ nghỉ để tiết kiệm pin. Tính năng này không dùng được trên X4 khi chạy bằng pin.
 
 ### Downloads and Supported Devices
 
-This source tracks **CrossPoint 1.6.5**. The published CrossFront v1.0 download below was built on **1.6.5rc**; a 1.6.5-based CrossFront binary has not been released yet. The ESP32-C3 binary is for **Xteink X3 Global and Xteink X4**. X4 has no RTC, so scheduled wakeup is not available on battery. Domestic/China editions are USB-locked by default; Xteink X4 Pro and X4 Classic (ESP32-S3) have no CrossFront binary yet.
+This source tracks **CrossPoint 1.6.5** and **CrossFront 1.2**. The published CrossFront v1.0 download below is an older build based on **1.6.5rc**; the CrossFront 1.2 binary is not published yet. The ESP32-C3 binary is for **Xteink X3 Global and Xteink X4**. X4 has no RTC, so scheduled wakeup is not available on battery. Domestic/China editions are USB-locked by default; Xteink X4 Pro and X4 Classic (ESP32-S3) have no CrossFront binary yet.
 
 > [!CAUTION]
 > **WARNING / CẢNH BÁO — READ BEFORE INSTALLING / ĐỌC TRƯỚC KHI CÀI**
@@ -27,7 +31,7 @@ This source tracks **CrossPoint 1.6.5**. The published CrossFront v1.0 download 
 >
 > **Tiếng Việt:** CrossFront được cung cấp nguyên trạng. Bạn tự chịu mọi rủi ro khi cài đặt firmware. Chúng tôi từ chối trách nhiệm đối với máy bị brick, hư hỏng, mất dữ liệu hoặc không sử dụng được do chọn sai file, làm gián đoạn quá trình cài đặt hoặc bỏ qua hướng dẫn.
 
-#### CrossFront v1.0 — [Release page](https://github.com/uteminhduc/crossfront/releases/tag/v1.0)
+#### Previously published: CrossFront v1.0 — [Release page](https://github.com/uteminhduc/crossfront/releases/tag/v1.0)
 
 The published CrossPoint 1.6.5rc-based firmware works on **Xteink X3 Global and Xteink X4** because both use the same ESP32-C3 binary:
 
