@@ -51,6 +51,68 @@ const char* intervalToString(const uint8_t interval) {
     default: return "on_sleep";
   }
 }
+
+HalDisplay::GrayscaleMode sleepGrayscaleMode(const GfxRenderer& renderer) {
+  return renderer.grayscaleCapabilities(HalDisplay::GrayscaleMode::Direct).supported()
+             ? HalDisplay::GrayscaleMode::Direct
+             : HalDisplay::GrayscaleMode::Absolute;
+}
+
+bool renderSleepBitmap(GfxRenderer& renderer, Bitmap& bitmap) {
+  const auto pageWidth = renderer.getScreenWidth();
+  const auto pageHeight = renderer.getScreenHeight();
+  const bool hasGreyscale =
+      bitmap.hasGreyscale() &&
+      SETTINGS.sleepScreenCoverFilter == CrossPointSettings::SLEEP_SCREEN_COVER_FILTER::NO_FILTER;
+
+  renderer.clearScreen();
+  if (!renderer.drawBitmap(bitmap, 0, 0, pageWidth, pageHeight)) {
+    renderer.displayBuffer(HalDisplay::HALF_REFRESH);
+    return true;
+  }
+
+  if (SETTINGS.sleepScreenCoverFilter ==
+      CrossPointSettings::SLEEP_SCREEN_COVER_FILTER::INVERTED_BLACK_AND_WHITE) {
+    renderer.invertScreen();
+  }
+
+  const auto grayscaleMode = sleepGrayscaleMode(renderer);
+  const bool absolute = hasGreyscale && renderer.grayscaleCapabilities(grayscaleMode).supported();
+  if (absolute) {
+    if (!renderer.displayGrayscaleBase(grayscaleMode)) return true;
+  } else if (hasGreyscale) {
+    renderer.displayGrayscaleBase(HalDisplay::HALF_REFRESH);
+  } else {
+    renderer.displayBuffer(HalDisplay::HALF_REFRESH);
+  }
+
+  if (!hasGreyscale) return true;
+
+  bool ready = true;
+  for (const auto plane : {GfxRenderer::GRAYSCALE_LSB, GfxRenderer::GRAYSCALE_MSB}) {
+    if (bitmap.rewindToData() != BmpReaderError::Ok) {
+      ready = false;
+      break;
+    }
+    renderer.clearScreen(absolute ? 0xFF : 0x00);
+    renderer.setRenderMode(plane);
+    if (!renderer.drawBitmap(bitmap, 0, 0, pageWidth, pageHeight)) {
+      ready = false;
+      break;
+    }
+    if (plane == GfxRenderer::GRAYSCALE_LSB)
+      renderer.copyGrayscaleLsbBuffers();
+    else
+      renderer.copyGrayscaleMsbBuffers();
+  }
+
+  if (ready)
+    renderer.displayGrayBuffer();
+  else
+    LOG_ERR("CF", "Incomplete grayscale sleep image; keeping the current display");
+  renderer.setRenderMode(GfxRenderer::BW);
+  return true;
+}
 }  // namespace
 
 static std::string lastSyncedWifiSsid = "";
@@ -239,11 +301,12 @@ bool CrossFrontService::handleTimerWakeup(HalDisplay& display, GfxRenderer& rend
     if (Storage.openFileForRead("CF", SLEEP_BMP_PATH, file)) {
       display.begin(true);
       renderer.begin();
-      Bitmap bitmap(file);
+      Bitmap bitmap(file, true,
+                    renderer.grayscaleCapabilities(sleepGrayscaleMode(renderer)).supported() &&
+                        display.getController() == HalDisplay::Controller::SSD1677 &&
+                        SETTINGS.sleepScreenCoverFilter == CrossPointSettings::SLEEP_SCREEN_COVER_FILTER::NO_FILTER);
       if (bitmap.parseHeaders() == BmpReaderError::Ok) {
-        renderer.clearScreen();
-        renderer.drawBitmap(bitmap, 0, 0, renderer.getScreenWidth(), renderer.getScreenHeight());
-        renderer.displayBuffer(HalDisplay::HALF_REFRESH);
+        renderSleepBitmap(renderer, bitmap);
       }
       file.close();
       display.deepSleep();
@@ -273,7 +336,7 @@ bool CrossFrontService::handleTimerWakeup(HalDisplay& display, GfxRenderer& rend
   return true;
 }
 
-bool CrossFrontService::renderSleepScreen(const GfxRenderer& renderer) {
+bool CrossFrontService::renderSleepScreen(GfxRenderer& renderer) {
   sTimerWakeupConsecutiveFailures = 0;
   CROSSFRONT_SETTINGS.loadFromFile();
   const unsigned long networkTimeoutMs = CROSSFRONT_SETTINGS.sleepNetworkTimeoutMs;
@@ -285,13 +348,13 @@ bool CrossFrontService::renderSleepScreen(const GfxRenderer& renderer) {
 
   HalFile file;
   if (Storage.openFileForRead("CF", SLEEP_BMP_PATH, file)) {
-    Bitmap bitmap(file);
+    Bitmap bitmap(file, true,
+                  renderer.grayscaleCapabilities(sleepGrayscaleMode(renderer)).supported() &&
+                      display.getController() == HalDisplay::Controller::SSD1677 &&
+                      SETTINGS.sleepScreenCoverFilter == CrossPointSettings::SLEEP_SCREEN_COVER_FILTER::NO_FILTER);
     if (bitmap.parseHeaders() == BmpReaderError::Ok) {
       LOG_DBG("CF", "Rendering CrossFront sleep screen (%dx%d)", bitmap.getWidth(), bitmap.getHeight());
-      renderer.clearScreen();
-      renderer.drawBitmap(bitmap, 0, 0, renderer.getScreenWidth(), renderer.getScreenHeight());
-      renderer.displayBuffer(HalDisplay::HALF_REFRESH);
-      return true;
+      return renderSleepBitmap(renderer, bitmap);
     }
   }
 

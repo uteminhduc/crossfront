@@ -40,7 +40,7 @@ class CrossFrontService {
   static bool handleTimerWakeup(HalDisplay& display, GfxRenderer& renderer);
 
   // Draws sleep screen image. Returns true on success.
-  static bool renderSleepScreen(const GfxRenderer& renderer);
+  static bool renderSleepScreen(GfxRenderer& renderer);
 
   // Immediate sync: connects Wi-Fi, fetches config/wifi_list, saves settings (30s fixed budget).
   static SyncResult syncNow(ProgressFn onProgress = nullptr, void* userData = nullptr,
