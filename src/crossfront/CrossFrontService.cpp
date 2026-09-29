@@ -4,6 +4,8 @@
 #include <BitmapHelpers.h>
 #include <HalStorage.h>
 #include <Logging.h>
+#include <ObfuscationUtils.h>
+#include <PersistableStore.h>
 #include <WiFi.h>
 #include <esp_sleep.h>
 
@@ -15,7 +17,9 @@
 
 #include "CrossPointSettings.h"
 #include "WifiCredentialStore.h"
+#include "OpdsServerStore.h"
 #include "crossfront/CrossFrontCrypto.h"
+#include "crossfront/CrossFrontFileSafety.h"
 #include "crossfront/CrossFrontSettings.h"
 #include "crossfront/SleepImageRequest.h"
 #include "network/HttpDownloader.h"
@@ -23,6 +27,99 @@
 
 namespace {
 RTC_DATA_ATTR uint8_t sTimerWakeupConsecutiveFailures = 0;
+
+struct OpdsSyncState {
+  static const char* filePath() { return "/.crosspoint/cf_opds_sync.json"; }
+
+  bool initialized = false;
+  bool downloadPending = false;
+  uint32_t syncedHash = 0;
+
+  void load() {
+    HalFile file = Storage.open(filePath());
+    if (!file || file.fileSize64() > 256) return;
+    file.close();
+    JsonDocument doc;
+    if (!PersistableStoreBase::readDocFromFile(filePath(), doc) ||
+        !doc["initialized"].is<bool>() || !doc["downloadPending"].is<bool>() ||
+        (doc["initialized"].as<bool>() && !doc["syncedHash"].is<uint32_t>())) {
+      return;
+    }
+    initialized = doc["initialized"].as<bool>();
+    downloadPending = doc["downloadPending"].as<bool>();
+    syncedHash = doc["syncedHash"] | static_cast<uint32_t>(0);
+  }
+
+  bool save() const {
+    JsonDocument doc;
+    doc["initialized"] = initialized;
+    doc["downloadPending"] = downloadPending;
+    if (initialized) doc["syncedHash"] = syncedHash;
+    return PersistableStoreBase::writeDocToFile(filePath(), doc);
+  }
+};
+
+bool validOpdsText(JsonVariantConst value, size_t maxLength, bool required) {
+  if (value.isNull()) return !required;
+  if (!value.is<const char*>()) return false;
+  const JsonString text = value.as<JsonString>();
+  if (text.size() > maxLength) return false;
+  for (size_t index = 0; index < text.size(); ++index) {
+    const auto character = static_cast<unsigned char>(text.c_str()[index]);
+    if (character < 32 || character == 127) return false;
+  }
+  return true;
+}
+
+bool validLocalOpdsFile() {
+  HalFile file = Storage.open(OpdsServerStore::getFilePath());
+  if (!file || file.fileSize64() > 32768) return false;
+  file.close();
+
+  JsonDocument doc;
+  if (!PersistableStoreBase::readDocFromFile(OpdsServerStore::getFilePath(), doc) ||
+      !doc["servers"].is<JsonArray>()) return false;
+  JsonArray servers = doc["servers"].as<JsonArray>();
+  if (servers.size() > 8) return false;
+  for (JsonVariant item : servers) {
+    if (!item.is<JsonObject>() || !validOpdsText(item["name"], 128, true) ||
+        !validOpdsText(item["url"], 1024, true) ||
+        !validOpdsText(item["username"], 256, false) ||
+        !validOpdsText(item["password_obf"], 512, false) ||
+        !validOpdsText(item["password"], 256, false)) {
+      return false;
+    }
+    const char* encodedPassword = item["password_obf"] | "";
+    if (encodedPassword[0] != '\0') {
+      bool decoded = false;
+      bool tooLong = false;
+      obfuscation::deobfuscateFromBase64(encodedPassword, 256, &decoded, &tooLong);
+      if (!decoded) return false;
+    }
+  }
+  return true;
+}
+
+uint32_t opdsConfigHash() {
+  JsonDocument doc;
+  doc["downloadFolder"] = SETTINGS.opdsDownloadFolder;
+  doc["filenameFormat"] = SETTINGS.opdsFilenameFormat;
+  JsonArray servers = doc["servers"].to<JsonArray>();
+  for (const auto& server : OPDS_STORE.getServers()) {
+    JsonObject item = servers.add<JsonObject>();
+    item["name"] = server.name;
+    item["url"] = server.url;
+    item["username"] = server.username;
+    item["password"] = server.password;
+  }
+  std::string serialized;
+  serializeJson(doc, serialized);
+  uint32_t hash = 2166136261u;
+  for (const unsigned char character : serialized) {
+    hash = (hash ^ character) * 16777619u;
+  }
+  return hash;
+}
 
 std::vector<std::pair<std::string, std::string>> makeCrossFrontHeaders(const char* deviceId, const char* token) {
   std::vector<std::pair<std::string, std::string>> headers;
@@ -379,8 +476,12 @@ CrossFrontService::SyncResult CrossFrontService::syncNow(ProgressFn onProgress, 
   sTimerWakeupConsecutiveFailures = 0;
   lastSyncedWifiSsid = "";
   CROSSFRONT_SETTINGS.loadFromFile();
+  OpdsSyncState opdsSync;
+  opdsSync.load();
   auto& store = WifiCredentialStore::getInstance();
   store.loadFromFile();
+  const bool opdsStoreMissing = !Storage.exists(OpdsServerStore::getFilePath());
+  const bool opdsStoreLoaded = !opdsStoreMissing && validLocalOpdsFile() && OPDS_STORE.loadFromFile();
 
   if (store.getCredentialCount() == 0) {
     LOG_ERR("CF", "syncNow: No saved Wi-Fi credentials");
@@ -466,23 +567,51 @@ CrossFrontService::SyncResult CrossFrontService::syncNow(ProgressFn onProgress, 
         net["password"] = cred->password;
       }
     }
+    const bool opdsChanged = (opdsStoreLoaded || (!opdsSync.initialized && opdsStoreMissing)) &&
+                             !opdsSync.downloadPending &&
+                             (!opdsSync.initialized || opdsConfigHash() != opdsSync.syncedHash);
+    const std::string opdsFolder = SETTINGS.opdsDownloadFolder;
+    const bool opdsValid = (opdsFolder.empty() ||
+                            (opdsFolder.size() <= 63 && crossfront::isSafeTargetFolder(opdsFolder))) &&
+                           SETTINGS.opdsFilenameFormat <= 2;
+    if (opdsChanged && opdsValid) {
+      JsonObject opds = reqDoc["opds"].to<JsonObject>();
+      opds["bootstrap"] = !opdsSync.initialized;
+      opds["downloadFolder"] = opdsFolder;
+      opds["filenameFormat"] = SETTINGS.opdsFilenameFormat;
+      JsonArray servers = opds["servers"].to<JsonArray>();
+      for (const auto& entry : OPDS_STORE.getServers()) {
+        JsonObject item = servers.add<JsonObject>();
+        item["name"] = entry.name;
+        item["url"] = entry.url;
+        item["username"] = entry.username;
+        item["password"] = entry.password;
+      }
+    } else if (opdsChanged) {
+      LOG_ERR("CF", "OPDS local download settings invalid; keeping local configuration");
+    } else if (!opdsStoreLoaded && !opdsStoreMissing) {
+      LOG_ERR("CF", "OPDS local file unreadable; keeping cloud configuration");
+    }
     std::string reqBody;
     serializeJson(reqDoc, reqBody);
 
+    constexpr size_t maxConfigResponseBytes = 65536;
     const int httpCode = http.sendRequest("POST",
                                           reinterpret_cast<const uint8_t*>(reqBody.data()),
                                           reqBody.size(),
-                                          [&jsonBody](const uint8_t* data, size_t len) {
+                                          [&jsonBody, maxConfigResponseBytes](const uint8_t* data, size_t len) {
+                                            if (len > maxConfigResponseBytes - jsonBody.size()) return false;
                                             jsonBody.append(reinterpret_cast<const char*>(data), len);
                                             return true;
                                           });
+    const bool responseComplete = http.responseComplete();
     http.end();
     if (httpCode == 404 || httpCode == 401) {
       disconnectWifi();
       LOG_ERR("CF", "syncNow: Device not paired on server (HTTP %d)", httpCode);
       return SyncResult::NOT_PAIRED;
     }
-    if (httpCode == 200) {
+    if (httpCode == 200 && responseComplete) {
       JsonDocument doc;
       if (deserializeJson(doc, jsonBody) == DeserializationError::Ok) {
         configOk = true;
@@ -526,6 +655,110 @@ CrossFrontService::SyncResult CrossFrontService::syncNow(ProgressFn onProgress, 
             store.saveToFile();
             LOG_INF("CF", "Wi-Fi list synchronized with CrossFront Web App");
           }
+        }
+
+        if (doc["config"]["opdsServers"].is<JsonArray>()) {
+          JsonArray cloudServers = doc["config"]["opdsServers"].as<JsonArray>();
+          JsonObject deviceConfig = doc["config"].as<JsonObject>();
+          JsonVariant cloudFolderValue = deviceConfig["opdsDownloadFolder"];
+          JsonVariant cloudFormatValue = deviceConfig["opdsFilenameFormat"];
+          std::string cloudFolder = opdsValid ? opdsFolder : "";
+          if (cloudFolderValue.is<const char*>()) {
+            const JsonString text = cloudFolderValue.as<JsonString>();
+            cloudFolder.assign(text.c_str(), text.size());
+          }
+          const int cloudFormat = cloudFormatValue.is<int>()
+                                      ? cloudFormatValue.as<int>()
+                                      : (SETTINGS.opdsFilenameFormat <= 2 ? SETTINGS.opdsFilenameFormat : 0);
+          bool validCloudServers = true;
+          for (JsonVariant item : cloudServers) {
+            if (!item.is<JsonObject>() || !validOpdsText(item["name"], 128, true) ||
+                !validOpdsText(item["url"], 1024, true) ||
+                !validOpdsText(item["username"], 256, false) ||
+                !validOpdsText(item["password"], 256, false)) {
+              validCloudServers = false;
+              break;
+            }
+          }
+          if (!validCloudServers ||
+              (!cloudFolderValue.isNull() && !cloudFolderValue.is<const char*>()) ||
+              (!cloudFormatValue.isNull() && !cloudFormatValue.is<int>()) ||
+              cloudServers.size() > 8 || cloudFolder.size() > 63 ||
+              (!cloudFolder.empty() && !crossfront::isSafeTargetFolder(cloudFolder)) ||
+              cloudFormat < 0 || cloudFormat > 2) {
+            LOG_ERR("CF", "OPDS server settings invalid on cloud");
+            configOk = false;
+          } else {
+            bool needsDownload = !opdsStoreLoaded || cloudFolder != SETTINGS.opdsDownloadFolder ||
+                                 cloudFormat != SETTINGS.opdsFilenameFormat ||
+                                 cloudServers.size() != OPDS_STORE.getCount();
+            size_t compareIndex = 0;
+            for (JsonObject item : cloudServers) {
+              const auto* existing = OPDS_STORE.getServer(compareIndex++);
+              if (!existing || existing->name != (item["name"] | "") ||
+                  existing->url != (item["url"] | "") ||
+                  existing->username != (item["username"] | "") ||
+                  existing->password != (item["password"] | "")) {
+                needsDownload = true;
+              }
+            }
+            bool opdsSynced = true;
+            if (needsDownload && !opdsSync.downloadPending) {
+              opdsSync.downloadPending = true;
+              opdsSynced = opdsSync.save();
+            }
+            size_t index = 0;
+            for (JsonObject item : cloudServers) {
+              if (!opdsSynced) break;
+              OpdsServer server;
+              server.name = item["name"] | "";
+              server.url = item["url"] | "";
+              server.username = item["username"] | "";
+              server.password = item["password"] | "";
+              const auto* existing = OPDS_STORE.getServer(index);
+              if (existing) {
+                if (existing->name != server.name || existing->url != server.url ||
+                    existing->username != server.username || existing->password != server.password) {
+                  opdsSynced = OPDS_STORE.updateServer(index, server);
+                }
+              } else {
+                opdsSynced = OPDS_STORE.addServer(server);
+              }
+              if (!opdsSynced) break;
+              ++index;
+            }
+            while (opdsSynced && OPDS_STORE.getCount() > index) {
+              opdsSynced = OPDS_STORE.removeServer(OPDS_STORE.getCount() - 1);
+            }
+            if (opdsSynced && !opdsStoreLoaded) {
+              opdsSynced = OPDS_STORE.saveToFile();
+            }
+            if (opdsSynced && (cloudFolder != SETTINGS.opdsDownloadFolder ||
+                               cloudFormat != SETTINGS.opdsFilenameFormat)) {
+              strncpy(SETTINGS.opdsDownloadFolder, cloudFolder.c_str(), sizeof(SETTINGS.opdsDownloadFolder) - 1);
+              SETTINGS.opdsDownloadFolder[sizeof(SETTINGS.opdsDownloadFolder) - 1] = '\0';
+              SETTINGS.opdsFilenameFormat = static_cast<uint8_t>(cloudFormat);
+              opdsSynced = SETTINGS.saveToFile();
+            }
+            if (opdsSynced) {
+              const uint32_t syncedHash = opdsConfigHash();
+              if (opdsSync.downloadPending || !opdsSync.initialized ||
+                  opdsSync.syncedHash != syncedHash) {
+                opdsSync.initialized = true;
+                opdsSync.syncedHash = syncedHash;
+                opdsSync.downloadPending = false;
+                opdsSynced = opdsSync.save();
+              }
+            }
+            if (!opdsSynced) {
+              configOk = false;
+              LOG_ERR("CF", "Failed to synchronize OPDS server settings");
+            }
+          }
+        } else if (opdsSync.downloadPending ||
+                   (!opdsStoreLoaded && (opdsSync.initialized || !opdsStoreMissing))) {
+          configOk = false;
+          LOG_ERR("CF", "OPDS cloud settings missing during recovery");
         }
 
         if (isDirty) {

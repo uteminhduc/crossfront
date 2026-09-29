@@ -42,7 +42,7 @@ class CrossFrontService {
   // Draws sleep screen image. Returns true on success.
   static bool renderSleepScreen(GfxRenderer& renderer);
 
-  // Immediate sync: connects Wi-Fi, fetches config/wifi_list, saves settings (30s fixed budget).
+  // Immediate sync: connects Wi-Fi, exchanges config/Wi-Fi/OPDS, saves settings (30s fixed budget).
   static SyncResult syncNow(ProgressFn onProgress = nullptr, void* userData = nullptr,
                             unsigned long timeoutMs = MANUAL_SYNC_TIMEOUT_MS);
   static const std::string& getLastSyncedWifi();
