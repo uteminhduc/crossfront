@@ -107,6 +107,30 @@ TEST(CrossFrontFileSafety, RejectsFileNamesThatEscapeOrAliasSdPaths) {
   EXPECT_FALSE(crossfront::isSafeFileName(std::string(250, 'a')));
 }
 
+TEST(CrossFrontFileSafety, RequiresSafeVersionedBookOrFontAssignments) {
+  EXPECT_TRUE(crossfront::isSafeFileAssignment("assignment_1", "Novel.epub", "book", 1));
+  EXPECT_TRUE(crossfront::isSafeFileAssignment("assignment-2", "Font.ttf", "font", 42));
+  EXPECT_FALSE(crossfront::isSafeFileAssignment("", "Novel.epub", "book", 1));
+  EXPECT_FALSE(crossfront::isSafeFileAssignment("assignment_1", "../Novel.epub", "book", 1));
+  EXPECT_FALSE(crossfront::isSafeFileAssignment("assignment_1", "Novel.epub", "sleep", 1));
+  EXPECT_FALSE(crossfront::isSafeFileAssignment("assignment_1", "Novel.epub", "book", 0));
+}
+
+TEST(CrossFrontFileSafety, RejectsIncompleteDownloadedSize) {
+  EXPECT_TRUE(crossfront::isExpectedDownloadedSize(1024, 1024));
+  EXPECT_FALSE(crossfront::isExpectedDownloadedSize(1023, 1024));
+  EXPECT_FALSE(crossfront::isExpectedDownloadedSize(1024, 0));
+}
+
+TEST(CrossFrontFileSafety, CalculatesLargeDownloadProgressWithoutIntegerOverflow) {
+  constexpr size_t total = 64U * 1024U * 1024U;
+  EXPECT_EQ(crossfront::downloadProgressPercent(0, total), 0);
+  EXPECT_EQ(crossfront::downloadProgressPercent(total / 2, total), 50);
+  EXPECT_EQ(crossfront::downloadProgressPercent(total, total), 100);
+  EXPECT_EQ(crossfront::downloadProgressPercent(total + 1, total), 100);
+  EXPECT_EQ(crossfront::downloadProgressPercent(1, 0), 0);
+}
+
 TEST(CrossFrontFileSafety, RejectsFolderTraversalAndRootDestination) {
   EXPECT_TRUE(crossfront::isSafeTargetFolder("/Books/Novels"));
   EXPECT_TRUE(crossfront::isSafeTargetFolder("/.fonts/Family"));
@@ -151,11 +175,11 @@ TEST(CrossFrontFileSafety, InterruptedReplacementRestoresBackupFirst) {
   EXPECT_FALSE(storage.exists("/Books/book.epub.cfbak"));
 }
 
-TEST(CrossFrontFileSafety, ExistingBackupNeverGetsOverwritten) {
+TEST(CrossFrontFileSafety, StaleBackupBesideCommittedDestinationDoesNotBlockFutureSync) {
   FakeStorage storage{{{"/Books/book.epub", "current"},
                        {"/Books/book.epub.cfbak", "older"},
                        {"/Books/book.epub.tmp", "new"}}, ""};
-  EXPECT_FALSE(crossfront::replaceDownloadedFile(storage, "/Books/book.epub.tmp", "/Books/book.epub"));
-  EXPECT_EQ(storage.files.at("/Books/book.epub"), "current");
-  EXPECT_EQ(storage.files.at("/Books/book.epub.cfbak"), "older");
+  EXPECT_TRUE(crossfront::replaceDownloadedFile(storage, "/Books/book.epub.tmp", "/Books/book.epub"));
+  EXPECT_EQ(storage.files.at("/Books/book.epub"), "new");
+  EXPECT_FALSE(storage.exists("/Books/book.epub.cfbak"));
 }

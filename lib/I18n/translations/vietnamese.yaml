@@ -135,6 +135,8 @@ STR_CROSSFRONT_REVEAL_PAIRING_INFO: "Hiện thông tin ghép nối trong 30 giâ
 STR_CROSSFRONT_SYNCING_FILES: "Đang tải..."
 STR_CROSSFRONT_NO_NEW_FILES: "Không có file mới"
 STR_CROSSFRONT_FILES_SYNC_OK: "Đã tải %u file"
+STR_CROSSFRONT_NOVEL_CRAWLING: "Cloud: đang cào truyện (%u chương)"
+STR_CROSSFRONT_NOVEL_PACKAGING: "Cloud: đang đóng gói EPUB"
 STR_ON_SLEEP: "Khi vào Sleep"
 STR_TOUCH_TOGGLE: "Cảm ứng"
 STR_NIGHT_MODE: "Chế độ ban đêm"

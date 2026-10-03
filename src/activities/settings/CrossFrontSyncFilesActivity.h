@@ -16,6 +16,7 @@ class CrossFrontSyncFilesActivity final : public Activity {
     std::string type;
     std::string folder;
     size_t size = 0;
+    uint32_t revision = 0;
     bool downloaded = false;
   };
 
@@ -39,14 +40,22 @@ class CrossFrontSyncFilesActivity final : public Activity {
     ERROR_STATE,
   };
 
+  enum class NovelProgress : uint8_t {
+    NONE,
+    CRAWLING,
+    PACKAGING,
+  };
+
   bool fetchFileList();
   bool downloadSingleFile(const FileItem& file);
-  void markFileDone(const std::string& fileId);
+  bool markFileDone(const std::string& fileId, uint32_t revision);
   std::string resolveAndSanitizeTargetFolder(const FileItem& file) const;
   bool ensureTargetFolderExists(const std::string& folder) const;
 
   State state = State::CONNECTING_WIFI;
   std::string errorMessage;
+  NovelProgress novelProgress = NovelProgress::NONE;
+  uint32_t novelCrawledChapters = 0;
   std::vector<FileItem> pendingFiles;
   size_t currentFileIndex = 0;
   size_t downloadedSuccessCount = 0;

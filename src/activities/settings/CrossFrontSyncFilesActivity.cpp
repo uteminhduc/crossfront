@@ -1,5 +1,8 @@
 #include "CrossFrontSyncFilesActivity.h"
 
+#include <cctype>
+#include <cstdlib>
+
 #include <ArduinoJson.h>
 #include <FontCacheManager.h>
 #include <GfxRenderer.h>
@@ -17,6 +20,9 @@
 #include "util/BookCacheUtils.h"
 
 namespace {
+constexpr size_t MAX_FILE_LIST_RESPONSE_BYTES = 64 * 1024;
+constexpr size_t MAX_FILE_LIST_ITEMS = 50;
+
 std::vector<std::pair<std::string, std::string>> makeHeaders(const char* deviceId, const char* token) {
   std::vector<std::pair<std::string, std::string>> headers;
   headers.reserve(2);
@@ -45,6 +51,8 @@ void CrossFrontSyncFilesActivity::onEnter() {
   Activity::onEnter();
   state = State::CONNECTING_WIFI;
   errorMessage = "";
+  novelProgress = NovelProgress::NONE;
+  novelCrawledChapters = 0;
   pendingFiles.clear();
   currentFileIndex = 0;
   downloadedSuccessCount = 0;
@@ -144,10 +152,19 @@ void CrossFrontSyncFilesActivity::loop() {
           return;
         }
 
-        if (ok) {
-          markFileDone(file.id);
-          downloadedSuccessCount++;
+        if (!ok) {
+          state = State::ERROR_STATE;
+          errorMessage = tr(STR_CROSSFRONT_ERR_SERVER);
+          requestUpdate(true);
+          return;
         }
+        if (!markFileDone(file.id, file.revision)) {
+          state = State::ERROR_STATE;
+          errorMessage = tr(STR_CROSSFRONT_ERR_SERVER);
+          requestUpdate(true);
+          return;
+        }
+        downloadedSuccessCount++;
 
         currentFileIndex++;
         if (currentFileIndex < pendingFiles.size()) {
@@ -178,6 +195,7 @@ bool CrossFrontSyncFilesActivity::fetchFileList() {
 
   std::string filesUrl = server + "/api/cf/device/" + deviceId + "/files";
   std::string jsonBody;
+  bool responseTooLarge = false;
 
   freeink::SecureHttpClient http;
   http.setTimeout(15000);
@@ -193,10 +211,17 @@ bool CrossFrontSyncFilesActivity::fetchFileList() {
     http.addHeader(h.first.c_str(), h.second.c_str());
   }
 
-  const int httpCode = http.sendRequest("GET", nullptr, 0, [&jsonBody](const uint8_t* data, size_t len) {
+  const int httpCode = http.sendRequest("GET", nullptr, 0, [&jsonBody, &responseTooLarge](const uint8_t* data, size_t len) {
+    if (len > MAX_FILE_LIST_RESPONSE_BYTES || jsonBody.size() > MAX_FILE_LIST_RESPONSE_BYTES - len) {
+      responseTooLarge = true;
+      return false;
+    }
     jsonBody.append(reinterpret_cast<const char*>(data), len);
     return true;
   });
+  const std::string novelStatusHeader = http.getHeader("x-crossfront-novel-status");
+  const std::string novelCrawledHeader = http.getHeader("x-crossfront-novel-crawled");
+  const bool responseComplete = http.responseComplete();
   http.end();
 
   if (httpCode != 200) {
@@ -209,38 +234,102 @@ bool CrossFrontSyncFilesActivity::fetchFileList() {
     return false;
   }
 
+  if (responseTooLarge || !responseComplete) {
+    LOG_ERR("CF", "fetchFileList received an oversized or incomplete response");
+    errorMessage = tr(STR_CROSSFRONT_ERR_SERVER);
+    return false;
+  }
+
+  novelProgress = NovelProgress::NONE;
+  novelCrawledChapters = 0;
+  if (novelStatusHeader == "crawling") {
+    novelProgress = NovelProgress::CRAWLING;
+    char* end = nullptr;
+    const unsigned long parsed = strtoul(novelCrawledHeader.c_str(), &end, 10);
+    if (end != novelCrawledHeader.c_str() && end && *end == '\0' && parsed <= 100000UL) {
+      novelCrawledChapters = static_cast<uint32_t>(parsed);
+    }
+  } else if (novelStatusHeader == "packaging") {
+    novelProgress = NovelProgress::PACKAGING;
+  }
+
   JsonDocument doc;
-  const auto err = deserializeJson(doc, jsonBody);
-  if (err != DeserializationError::Ok) {
-    LOG_ERR("CF", "fetchFileList: JSON parse error");
+  if (jsonBody.empty()) {
+    LOG_ERR("CF", "fetchFileList received an empty response body");
+    errorMessage = tr(STR_CROSSFRONT_ERR_SERVER);
+    return false;
+  }
+  // Parse in zero-copy mode so the bounded response buffer is not duplicated in
+  // the dynamic JsonDocument on low-heap ESP32 variants.
+  const auto err = deserializeJson(doc, &jsonBody[0], jsonBody.size());
+  if (err != DeserializationError::Ok || !doc.is<JsonArray>()) {
+    LOG_ERR("CF", "fetchFileList: JSON parse or shape error");
     errorMessage = tr(STR_CROSSFRONT_ERR_SERVER);
     return false;
   }
 
   pendingFiles.clear();
-  if (doc.is<JsonArray>()) {
-    const auto arr = doc.as<JsonArray>();
-    pendingFiles.reserve(arr.size());
-    for (JsonObject obj : arr) {
-      const bool downloaded = obj["downloaded"] | false;
-      if (!downloaded) {
-        FileItem item;
-        item.id = obj["id"] | "";
-        item.name = obj["fileName"] | obj["name"] | "";
-        item.type = obj["type"] | "book";
-        item.folder = obj["folder"] | "";
-        item.size = obj["size"] | 0;
-        item.downloaded = false;
-        if (crossfront::isSafeAssignmentId(item.id) && crossfront::isSafeFileName(item.name)) {
-          pendingFiles.push_back(std::move(item));
-        } else {
-          LOG_ERR("CF", "Skipping file assignment with unsafe ID or name");
-        }
-      }
+  const auto arr = doc.as<JsonArray>();
+  if (arr.size() > MAX_FILE_LIST_ITEMS) {
+    LOG_ERR("CF", "fetchFileList received too many assignments");
+    errorMessage = tr(STR_CROSSFRONT_ERR_SERVER);
+    return false;
+  }
+  pendingFiles.reserve(arr.size());
+  for (JsonVariantConst value : arr) {
+    if (!value.is<JsonObjectConst>()) {
+      LOG_ERR("CF", "Rejecting file list with a non-object assignment");
+      pendingFiles.clear();
+      errorMessage = tr(STR_CROSSFRONT_ERR_SERVER);
+      return false;
     }
+    const JsonObjectConst obj = value.as<JsonObjectConst>();
+    const JsonVariantConst downloadedValue = obj["downloaded"];
+    if (downloadedValue.is<ArduinoJson::JsonVariantConst>() && !downloadedValue.is<bool>()) {
+      LOG_ERR("CF", "Rejecting file list with an invalid downloaded flag");
+      pendingFiles.clear();
+      errorMessage = tr(STR_CROSSFRONT_ERR_SERVER);
+      return false;
+    }
+
+    const JsonVariantConst idValue = obj["id"];
+    const JsonVariantConst fileNameValue = obj["fileName"];
+    const JsonVariantConst legacyNameValue = obj["name"];
+    const JsonVariantConst typeValue = obj["type"];
+    const JsonVariantConst folderValue = obj["folder"];
+    const JsonVariantConst sizeValue = obj["size"];
+    const JsonVariantConst revisionValue = obj["revision"];
+    const bool hasFileName = fileNameValue.is<ArduinoJson::JsonVariantConst>();
+    const JsonVariantConst selectedNameValue = hasFileName ? fileNameValue : legacyNameValue;
+    if (!idValue.is<const char*>() || !selectedNameValue.is<const char*>() || !typeValue.is<const char*>() ||
+        !folderValue.is<const char*>() || !sizeValue.is<size_t>() || !revisionValue.is<uint32_t>()) {
+      LOG_ERR("CF", "Rejecting file list with malformed assignment fields");
+      pendingFiles.clear();
+      errorMessage = tr(STR_CROSSFRONT_ERR_SERVER);
+      return false;
+    }
+
+    FileItem item;
+    item.id = idValue.as<const char*>();
+    item.name = selectedNameValue.as<const char*>();
+    item.type = typeValue.as<const char*>();
+    item.folder = folderValue.as<const char*>();
+    item.size = sizeValue.as<size_t>();
+    item.revision = revisionValue.as<uint32_t>();
+    item.downloaded = false;
+    if (!crossfront::isSafeFileAssignment(item.id, item.name, item.type, item.revision) ||
+        (!item.folder.empty() && !crossfront::isSafeTargetFolder(item.folder))) {
+      LOG_ERR("CF", "Rejecting file list with an unsafe assignment");
+      pendingFiles.clear();
+      errorMessage = tr(STR_CROSSFRONT_ERR_SERVER);
+      return false;
+    }
+    if (downloadedValue.is<bool>() && downloadedValue.as<bool>()) continue;
+    pendingFiles.push_back(std::move(item));
   }
 
   LOG_INF("CF", "Found %u pending files to download", static_cast<unsigned>(pendingFiles.size()));
+
   return true;
 }
 
@@ -415,17 +504,26 @@ bool CrossFrontSyncFilesActivity::downloadSingleFile(const FileItem& file) {
   std::string downloadUrl = server + "/api/cf/device/" + deviceId + "/files/" + file.id + "/download";
 
   auto extraHeaders = makeHeaders(deviceId, token);
+  char revisionHeader[16];
+  snprintf(revisionHeader, sizeof(revisionHeader), "%u", static_cast<unsigned>(file.revision));
+  extraHeaders.emplace_back("X-Media-Revision", revisionHeader);
 
   fileBytesDownloaded = 0;
   fileBytesTotal = file.size;
   int lastRenderedPercent = -1;
   unsigned long lastProgressUpdateMs = millis();
+  const size_t expectedFileSize = file.size;
 
   LOG_INF("CF", "Downloading %s -> %s (temp: %s)", downloadUrl.c_str(), destPath.c_str(), tmpPath.c_str());
 
   const auto result = HttpDownloader::downloadToFile(
       downloadUrl, tmpPath,
-      [this, &lastRenderedPercent, &lastProgressUpdateMs](const size_t downloaded, const size_t total) {
+      [this, &lastRenderedPercent, &lastProgressUpdateMs, expectedFileSize](const size_t downloaded,
+                                                                              const size_t total) {
+        if (expectedFileSize > 0 && downloaded > expectedFileSize) {
+          cancelRequested = true;
+          return;
+        }
         fileBytesDownloaded = downloaded;
         if (total > 0) fileBytesTotal = total;
 
@@ -434,7 +532,7 @@ bool CrossFrontSyncFilesActivity::downloadSingleFile(const FileItem& file) {
           cancelRequested = true;
         }
 
-        const int percent = fileBytesTotal > 0 ? static_cast<int>(fileBytesDownloaded * 100 / fileBytesTotal) : 0;
+        const int percent = crossfront::downloadProgressPercent(fileBytesDownloaded, fileBytesTotal);
         const unsigned long now = millis();
         if (percent >= 100 || lastRenderedPercent < 0 || percent >= lastRenderedPercent + 5 ||
             now - lastProgressUpdateMs >= 2000) {
@@ -465,8 +563,10 @@ bool CrossFrontSyncFilesActivity::downloadSingleFile(const FileItem& file) {
   const size_t actualBytes = checkTmp.size();
   checkTmp.close();
 
-  if (actualBytes == 0) {
-    LOG_ERR("CF", "Downloaded temp file is 0 bytes: %s", tmpPath.c_str());
+  if (actualBytes == 0 ||
+      (file.size > 0 && !crossfront::isExpectedDownloadedSize(actualBytes, file.size))) {
+    LOG_ERR("CF", "Downloaded temp file size mismatch: got %u, expected %u: %s",
+            static_cast<unsigned>(actualBytes), static_cast<unsigned>(file.size), tmpPath.c_str());
     Storage.remove(tmpPath.c_str());
     return false;
   }
@@ -488,7 +588,7 @@ bool CrossFrontSyncFilesActivity::downloadSingleFile(const FileItem& file) {
   return true;
 }
 
-void CrossFrontSyncFilesActivity::markFileDone(const std::string& fileId) {
+bool CrossFrontSyncFilesActivity::markFileDone(const std::string& fileId, const uint32_t revision) {
   const char* serverUrl = CROSSFRONT_SETTINGS.getServerUrl();
   std::string server = std::string(serverUrl);
   if (!server.empty() && server.back() == '/') {
@@ -501,15 +601,22 @@ void CrossFrontSyncFilesActivity::markFileDone(const std::string& fileId) {
   freeink::SecureHttpClient http;
   http.setTimeout(10000);
   http.setInsecure();
-  if (http.begin(doneUrl)) {
-    http.setUserAgent("CrossPoint-ESP32");
-    auto extraHeaders = makeHeaders(deviceId, token);
-    for (const auto& h : extraHeaders) {
-      http.addHeader(h.first.c_str(), h.second.c_str());
-    }
-    http.sendRequest("POST", nullptr, 0, nullptr);
-    http.end();
+  if (!http.begin(doneUrl)) return false;
+  http.setUserAgent("CrossPoint-ESP32");
+  auto extraHeaders = makeHeaders(deviceId, token);
+  for (const auto& h : extraHeaders) {
+    http.addHeader(h.first.c_str(), h.second.c_str());
   }
+  char revisionHeader[16];
+  snprintf(revisionHeader, sizeof(revisionHeader), "%u", static_cast<unsigned>(revision));
+  http.addHeader("X-Media-Revision", revisionHeader);
+  const int httpCode = http.sendRequest("POST", nullptr, 0, nullptr);
+  http.end();
+  if (httpCode != 200) {
+    LOG_ERR("CF", "markFileDone failed: HTTP %d", httpCode);
+    return false;
+  }
+  return true;
 }
 
 void CrossFrontSyncFilesActivity::render(RenderLock&&) {
@@ -548,7 +655,7 @@ void CrossFrontSyncFilesActivity::render(RenderLock&&) {
         const int topY = pageHeight / 3;
         renderer.drawCenteredText(UI_10_FONT_ID, topY, titleBuf, true, EpdFontFamily::BOLD);
 
-        const int percent = fileBytesTotal > 0 ? static_cast<int>(fileBytesDownloaded * 100 / fileBytesTotal) : 0;
+        const int percent = crossfront::downloadProgressPercent(fileBytesDownloaded, fileBytesTotal);
         int barY = topY + fontHeight + metrics.verticalSpacing * 2;
         GUI.drawProgressBar(renderer,
                             Rect{metrics.contentSidePadding, barY, pageWidth - metrics.contentSidePadding * 2,
@@ -572,7 +679,17 @@ void CrossFrontSyncFilesActivity::render(RenderLock&&) {
     }
 
     case State::NO_FILES: {
-      renderer.drawCenteredText(UI_10_FONT_ID, centerY, tr(STR_CROSSFRONT_NO_NEW_FILES), true, EpdFontFamily::BOLD);
+      const bool hasNovelProgress = novelProgress != NovelProgress::NONE;
+      renderer.drawCenteredText(UI_10_FONT_ID, centerY - (hasNovelProgress ? fontHeight : 0),
+                                tr(STR_CROSSFRONT_NO_NEW_FILES), true, EpdFontFamily::BOLD);
+      if (novelProgress == NovelProgress::CRAWLING) {
+        char novelProgressText[96];
+        snprintf(novelProgressText, sizeof(novelProgressText), tr(STR_CROSSFRONT_NOVEL_CRAWLING),
+                 static_cast<unsigned>(novelCrawledChapters));
+        renderer.drawCenteredText(UI_10_FONT_ID, centerY + fontHeight, novelProgressText);
+      } else if (novelProgress == NovelProgress::PACKAGING) {
+        renderer.drawCenteredText(UI_10_FONT_ID, centerY + fontHeight, tr(STR_CROSSFRONT_NOVEL_PACKAGING));
+      }
       const auto labels = mappedInput.mapLabels(tr(STR_BACK), "", "", "");
       GUI.drawButtonHints(renderer, labels.btn1, labels.btn2, labels.btn3, labels.btn4);
       break;
