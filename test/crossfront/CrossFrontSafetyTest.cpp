@@ -86,13 +86,13 @@ TEST(CrossFrontSleepImage, DiscardsStaleBitmapEtagAndBackupBeforeFetch) {
   EXPECT_TRUE(storage.files.empty());
 }
 
-TEST(CrossFrontFileSafety, RejectsUnsafeAssignmentIdsBeforeUrlConstruction) {
-  EXPECT_TRUE(crossfront::isSafeAssignmentId("abc123_def-456"));
-  EXPECT_FALSE(crossfront::isSafeAssignmentId(""));
-  EXPECT_FALSE(crossfront::isSafeAssignmentId("../rotate-token"));
-  EXPECT_FALSE(crossfront::isSafeAssignmentId("a?download=1"));
-  EXPECT_FALSE(crossfront::isSafeAssignmentId("a#fragment"));
-  EXPECT_FALSE(crossfront::isSafeAssignmentId(std::string(65, 'a')));
+TEST(CrossFrontFileSafety, RejectsUnsafeMediaIdsBeforeUrlConstruction) {
+  EXPECT_TRUE(crossfront::isSafeMediaId("abc123_def-456"));
+  EXPECT_FALSE(crossfront::isSafeMediaId(""));
+  EXPECT_FALSE(crossfront::isSafeMediaId("../rotate-token"));
+  EXPECT_FALSE(crossfront::isSafeMediaId("a?download=1"));
+  EXPECT_FALSE(crossfront::isSafeMediaId("a#fragment"));
+  EXPECT_FALSE(crossfront::isSafeMediaId(std::string(65, 'a')));
 }
 
 TEST(CrossFrontFileSafety, RejectsFileNamesThatEscapeOrAliasSdPaths) {
@@ -107,13 +107,20 @@ TEST(CrossFrontFileSafety, RejectsFileNamesThatEscapeOrAliasSdPaths) {
   EXPECT_FALSE(crossfront::isSafeFileName(std::string(250, 'a')));
 }
 
-TEST(CrossFrontFileSafety, RequiresSafeVersionedBookOrFontAssignments) {
-  EXPECT_TRUE(crossfront::isSafeFileAssignment("assignment_1", "Novel.epub", "book", 1));
-  EXPECT_TRUE(crossfront::isSafeFileAssignment("assignment-2", "Font.ttf", "font", 42));
-  EXPECT_FALSE(crossfront::isSafeFileAssignment("", "Novel.epub", "book", 1));
-  EXPECT_FALSE(crossfront::isSafeFileAssignment("assignment_1", "../Novel.epub", "book", 1));
-  EXPECT_FALSE(crossfront::isSafeFileAssignment("assignment_1", "Novel.epub", "sleep", 1));
-  EXPECT_FALSE(crossfront::isSafeFileAssignment("assignment_1", "Novel.epub", "book", 0));
+TEST(CrossFrontFileSafety, RequiresSafeVersionedBookOrFontMedia) {
+  EXPECT_TRUE(crossfront::isSafeMediaFile("media_1", "Novel.epub", "book", 1));
+  EXPECT_TRUE(crossfront::isSafeMediaFile("media-2", "Font.ttf", "font", 42));
+  EXPECT_FALSE(crossfront::isSafeMediaFile("", "Novel.epub", "book", 1));
+  EXPECT_FALSE(crossfront::isSafeMediaFile("media_1", "../Novel.epub", "book", 1));
+  EXPECT_FALSE(crossfront::isSafeMediaFile("media_1", "Novel.epub", "sleep", 1));
+  EXPECT_FALSE(crossfront::isSafeMediaFile("media_1", "Novel.epub", "book", 0));
+}
+
+TEST(CrossFrontFileSafety, AcceptsOnlyBoundedDownloadIdsForRequestHeaders) {
+  EXPECT_TRUE(crossfront::isSafeDownloadId("7CE8B18EF308-12345678-ABCDEF01"));
+  EXPECT_FALSE(crossfront::isSafeDownloadId("short"));
+  EXPECT_FALSE(crossfront::isSafeDownloadId("download id with spaces"));
+  EXPECT_FALSE(crossfront::isSafeDownloadId(std::string(97, 'a')));
 }
 
 TEST(CrossFrontFileSafety, RejectsIncompleteDownloadedSize) {
@@ -141,6 +148,14 @@ TEST(CrossFrontFileSafety, RejectsFolderTraversalAndRootDestination) {
   }
   EXPECT_FALSE(crossfront::isSafeTargetFolder(std::string("/Books\0/other", 13)));
   EXPECT_FALSE(crossfront::isSafeTargetFolder("/Books/" + std::string(250, 'a')));
+}
+
+TEST(CrossFrontFileSafety, EbookFolderIsOneDirectoryBelowSdRoot) {
+  EXPECT_TRUE(crossfront::isSafeEbookFolder("/Books"));
+  EXPECT_TRUE(crossfront::isSafeEbookFolder("/Sách"));
+  EXPECT_FALSE(crossfront::isSafeEbookFolder("/Books/Novels"));
+  EXPECT_FALSE(crossfront::isSafeEbookFolder("/.crosspoint"));
+  EXPECT_FALSE(crossfront::isSafeEbookFolder("/" + std::string(63, 'a')));
 }
 
 TEST(CrossFrontFileSafety, ReplacesExistingFileOnlyAfterDownloadIsReady) {

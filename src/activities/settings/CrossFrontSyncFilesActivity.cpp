@@ -1,8 +1,11 @@
 #include "CrossFrontSyncFilesActivity.h"
 
-#include <cctype>
 #include <cstdlib>
+#include <cstring>
+#include <memory>
+#include <utility>
 
+#include <Arduino.h>
 #include <ArduinoJson.h>
 #include <FontCacheManager.h>
 #include <GfxRenderer.h>
@@ -10,63 +13,138 @@
 #include <I18n.h>
 #include <LibraryBuilder.h>
 #include <Logging.h>
+#include <Memory.h>
 #include <SecureHttpClient.h>
+#include <esp_system.h>
+#include <mbedtls/base64.h>
 
 #include "MappedInputManager.h"
-#include "SdCardFontSystem.h"
+#include "activities/util/ConfirmationActivity.h"
 #include "components/UITheme.h"
 #include "crossfront/CrossFrontFileSafety.h"
+#include "crossfront/CrossFrontService.h"
+#include "crossfront/CrossFrontSettings.h"
 #include "fontIds.h"
+#include "network/HttpDownloader.h"
 #include "util/BookCacheUtils.h"
 
-namespace {
-constexpr size_t MAX_FILE_LIST_RESPONSE_BYTES = 64 * 1024;
-constexpr size_t MAX_FILE_LIST_ITEMS = 50;
+namespace fui = freeink::ui;
 
-std::vector<std::pair<std::string, std::string>> makeHeaders(const char* deviceId, const char* token) {
-  std::vector<std::pair<std::string, std::string>> headers;
-  headers.reserve(2);
-  headers.emplace_back("X-Device-Id", deviceId ? deviceId : "");
-  if (token && token[0] != '\0') {
-    headers.emplace_back("X-Device-Token", token);
+namespace {
+constexpr size_t MAX_PAGE_RESPONSE_BYTES = 48 * 1024;
+constexpr uint32_t MAX_TOTAL_PAGES = 10000;
+constexpr uint16_t THUMBNAIL_WIDTH = 40;
+constexpr uint16_t THUMBNAIL_HEIGHT = 56;
+constexpr size_t MAX_THUMBNAIL_BMP_BYTES = 4096;
+
+uint16_t readLittleEndian16(const uint8_t* data) {
+  return static_cast<uint16_t>(data[0]) | (static_cast<uint16_t>(data[1]) << 8);
+}
+
+uint32_t readLittleEndian32(const uint8_t* data) {
+  return static_cast<uint32_t>(data[0]) | (static_cast<uint32_t>(data[1]) << 8) |
+         (static_cast<uint32_t>(data[2]) << 16) | (static_cast<uint32_t>(data[3]) << 24);
+}
+
+bool decodeThumbnailBmp(const char* encoded, std::vector<uint8_t>& output) {
+  output.clear();
+  if (!encoded || encoded[0] == '\0') return false;
+  const size_t encodedLength = std::strlen(encoded);
+  size_t decodedLength = 0;
+  int result = mbedtls_base64_decode(nullptr, 0, &decodedLength,
+                                     reinterpret_cast<const unsigned char*>(encoded), encodedLength);
+  if ((result != 0 && result != MBEDTLS_ERR_BASE64_BUFFER_TOO_SMALL) || decodedLength < 62 ||
+      decodedLength > MAX_THUMBNAIL_BMP_BYTES) {
+    return false;
   }
+  std::vector<uint8_t> bmp(decodedLength);
+  result = mbedtls_base64_decode(bmp.data(), bmp.size(), &decodedLength,
+                                 reinterpret_cast<const unsigned char*>(encoded), encodedLength);
+  if (result != 0 || decodedLength < 62 || bmp[0] != 'B' || bmp[1] != 'M') return false;
+  const uint32_t pixelOffset = readLittleEndian32(&bmp[10]);
+  const uint32_t width = readLittleEndian32(&bmp[18]);
+  const uint32_t height = readLittleEndian32(&bmp[22]);
+  const uint16_t planes = readLittleEndian16(&bmp[26]);
+  const uint16_t bitsPerPixel = readLittleEndian16(&bmp[28]);
+  const uint32_t compression = readLittleEndian32(&bmp[30]);
+  if (width != THUMBNAIL_WIDTH || height != THUMBNAIL_HEIGHT || planes != 1 || bitsPerPixel != 1 ||
+      compression != 0 || pixelOffset < 62 || pixelOffset > decodedLength) {
+    return false;
+  }
+  const size_t sourceStride = ((width + 31) / 32) * 4;
+  if (sourceStride * height > decodedLength - pixelOffset) return false;
+
+  const size_t destinationStride = (THUMBNAIL_WIDTH + 7) / 8;
+  output.assign(destinationStride * THUMBNAIL_HEIGHT, 0);
+  for (uint16_t y = 0; y < THUMBNAIL_HEIGHT; ++y) {
+    const uint8_t* sourceRow = bmp.data() + pixelOffset + (THUMBNAIL_HEIGHT - 1 - y) * sourceStride;
+    uint8_t* destinationRow = output.data() + y * destinationStride;
+    for (uint16_t x = 0; x < THUMBNAIL_WIDTH; ++x) {
+      const bool white = ((sourceRow[x / 8] >> (7 - x % 8)) & 0x01) != 0;
+      if (!white) destinationRow[x / 8] |= 1 << (7 - x % 8);
+    }
+  }
+  return true;
+}
+
+std::vector<std::pair<std::string, std::string>> makeHeaders(const char* token) {
+  std::vector<std::pair<std::string, std::string>> headers;
+  headers.reserve(3);
+  if (token && token[0] != '\0') headers.emplace_back("X-Device-Token", token);
   return headers;
 }
 
-void formatSize(const size_t bytes, char* out, const size_t outSize) {
+std::string formatSize(const size_t bytes) {
+  char out[32];
   if (bytes < 1024) {
-    snprintf(out, outSize, "%u B", static_cast<unsigned>(bytes));
+    snprintf(out, sizeof(out), "%u B", static_cast<unsigned>(bytes));
   } else if (bytes < 1024 * 1024) {
-    snprintf(out, outSize, "%.1f KB", static_cast<float>(bytes) / 1024.0f);
+    snprintf(out, sizeof(out), "%.1f KB", static_cast<double>(bytes) / 1024.0);
   } else {
-    snprintf(out, outSize, "%.1f MB", static_cast<float>(bytes) / (1024.0f * 1024.0f));
+    snprintf(out, sizeof(out), "%.1f MB", static_cast<double>(bytes) / (1024.0 * 1024.0));
   }
+  return out;
+}
+
+bool isKnownStatus(const std::string& status) {
+  return status == "pending" || status == "crawling" || status == "packaging" || status == "ready" ||
+         status == "failed";
+}
+
+std::string makeDownloadId(const char* deviceId) {
+  char id[80];
+  snprintf(id, sizeof(id), "%s-%08lx-%08lx", deviceId ? deviceId : "device",
+           static_cast<unsigned long>(millis()), static_cast<unsigned long>(esp_random()));
+  return id;
 }
 }  // namespace
 
 CrossFrontSyncFilesActivity::CrossFrontSyncFilesActivity(GfxRenderer& renderer, MappedInputManager& mappedInput)
-    : Activity("CrossFrontSyncFiles", renderer, mappedInput) {}
+    : UiListActivity("CrossFrontSyncFiles", renderer, mappedInput) {}
 
 void CrossFrontSyncFilesActivity::onEnter() {
-  Activity::onEnter();
+  UiListActivity::onEnter();
   state = State::CONNECTING_WIFI;
-  errorMessage = "";
-  novelProgress = NovelProgress::NONE;
-  novelCrawledChapters = 0;
-  pendingFiles.clear();
-  currentFileIndex = 0;
-  downloadedSuccessCount = 0;
+  retryAction = RetryAction::NONE;
+  errorMessage.clear();
+  clearPendingDownloadStatus();
+  items.clear();
+  rowLabels.clear();
+  rowSubtitles.clear();
+  rowValues.clear();
+  rowItems.clear();
+  rowsDirty = true;
+  page = 1;
+  pendingPage = 1;
+  totalPages = 0;
+  activeDownloadIndex = -1;
   fileBytesDownloaded = 0;
   fileBytesTotal = 0;
   cancelRequested = false;
 
   CROSSFRONT_SETTINGS.loadFromFile();
   CROSSFRONT_SETTINGS.getDeviceId(deviceId, sizeof(deviceId));
-
-  if (auto* fcm = renderer.getFontCacheManager()) {
-    fcm->releaseSdFontCaches();
-  }
-
+  if (auto* cache = renderer.getFontCacheManager()) cache->releaseSdFontCaches();
   requestUpdate(true);
 }
 
@@ -76,462 +154,479 @@ void CrossFrontSyncFilesActivity::onExit() {
 }
 
 bool CrossFrontSyncFilesActivity::skipLoopDelay() {
-  return state == State::CONNECTING_WIFI || state == State::FETCHING_LIST || state == State::DOWNLOADING;
+  return state == State::CONNECTING_WIFI || state == State::FETCHING_LIST || state == State::DOWNLOADING ||
+         state == State::SYNCING_DOWNLOAD_STATUS;
 }
 
-void CrossFrontSyncFilesActivity::loop() {
-  int touchX = 0;
-  int touchY = 0;
-  const bool screenTapped = mappedInput.wasScreenTapped(touchX, touchY);
-  const bool backPressed = mappedInput.wasReleased(MappedInputManager::Button::Back);
-  const bool confirmPressed = mappedInput.wasReleased(MappedInputManager::Button::Confirm);
+int CrossFrontSyncFilesActivity::listCount() const {
+  if (state != State::BROWSING && state != State::DOWNLOADING) return 0;
+  return static_cast<int>(items.size()) + (page > 1 ? 1 : 0) + (page < totalPages ? 1 : 0);
+}
 
-  if (state == State::COMPLETE || state == State::NO_FILES || state == State::ERROR_STATE) {
-    if (backPressed || confirmPressed || screenTapped) {
-      finish();
-      return;
-    }
-  } else if (state == State::CONNECTING_WIFI) {
-    if (backPressed || screenTapped) {
-      finish();
-      return;
-    }
-  } else if (state == State::DOWNLOADING) {
-    if (backPressed || screenTapped) {
-      cancelRequested = true;
-      return;
-    }
+const char* CrossFrontSyncFilesActivity::headerTitle() const { return tr(STR_CROSSFRONT_SYNC_FILES); }
+
+bool CrossFrontSyncFilesActivity::isPreviousRow(const int row) const { return page > 1 && row == 0; }
+
+bool CrossFrontSyncFilesActivity::isNextRow(const int row) const {
+  return page < totalPages && row == listCount() - 1;
+}
+
+int CrossFrontSyncFilesActivity::itemIndexFromRow(const int row) const {
+  const int index = row - (page > 1 ? 1 : 0);
+  return index >= 0 && index < static_cast<int>(items.size()) ? index : -1;
+}
+
+bool CrossFrontSyncFilesActivity::isDownloadable(const EbookItem& item) const {
+  return item.status == "ready" && crossfront::isSafeMediaId(item.mediaId) &&
+         crossfront::isSafeFileName(item.fileName) && item.revision > 0 && item.size > 0;
+}
+
+bool CrossFrontSyncFilesActivity::isFilePresent(const EbookItem& item) const {
+  if (!isDownloadable(item)) return false;
+  const std::string path = std::string(CROSSFRONT_SETTINGS.getEbookDir()) + "/" + item.fileName;
+  if (!Storage.exists(path.c_str())) return false;
+  HalFile file;
+  if (!Storage.openFileForRead("CF", path, file)) return false;
+  const size_t actualSize = file.size();
+  file.close();
+  return crossfront::isExpectedDownloadedSize(actualSize, item.size);
+}
+
+std::string CrossFrontSyncFilesActivity::itemStatusText(const EbookItem& item) const {
+  if (item.status == "ready") {
+    return isDownloadable(item) ? std::string(tr(STR_CROSSFRONT_EBOOK_READY)) + " - " + formatSize(item.size)
+                                : tr(STR_CROSSFRONT_EBOOK_UNAVAILABLE);
   }
+  if (item.status == "crawling") {
+    const std::string progress = std::to_string(item.crawled) + "/" +
+                                 (item.total > 0 ? std::to_string(item.total) : "?");
+    return std::string(tr(STR_CROSSFRONT_EBOOK_CRAWLING)) + " " + progress;
+  }
+  if (item.status == "packaging") return tr(STR_CROSSFRONT_EBOOK_CREATING_EPUB);
+  if (item.status == "pending") return tr(STR_CROSSFRONT_EBOOK_PENDING);
+  if (item.status == "failed") return tr(STR_CROSSFRONT_EBOOK_FAILED);
+  return item.status;
+}
 
-  switch (state) {
-    case State::CONNECTING_WIFI: {
-      const bool wifiOk = CrossFrontService::connectWifiQuick(15000);
-      if (!wifiOk) {
-        state = State::ERROR_STATE;
-        errorMessage = tr(STR_CROSSFRONT_ERR_WIFI);
-        requestUpdate(true);
-        return;
+std::string CrossFrontSyncFilesActivity::itemSubtitleText(const EbookItem& item) const {
+  const char* source = item.sourceType == "generated" ? tr(STR_CROSSFRONT_EBOOK_SOURCE_GENERATED)
+                                                        : tr(STR_CROSSFRONT_EBOOK_SOURCE_UPLOAD);
+  return itemStatusText(item) + " - " + source;
+}
+
+void CrossFrontSyncFilesActivity::rebuildRows() {
+  const int count = listCount();
+  rowLabels.assign(count, std::string());
+  rowSubtitles.assign(count, std::string());
+  rowValues.assign(count, std::string());
+  rowItems.clear();
+  rowItems.reserve(count);
+
+  for (int row = 0; row < count; ++row) {
+    fui::ListItem listItem;
+    if (isPreviousRow(row)) {
+      rowLabels[row] = tr(STR_CROSSFRONT_EBOOK_PREVIOUS_PAGE);
+      rowValues[row] = std::to_string(page - 1) + "/" + std::to_string(totalPages);
+      listItem.label = rowLabels[row].c_str();
+      listItem.value = rowValues[row].c_str();
+    } else if (isNextRow(row)) {
+      rowLabels[row] = tr(STR_CROSSFRONT_EBOOK_NEXT_PAGE);
+      rowValues[row] = std::to_string(page + 1) + "/" + std::to_string(totalPages);
+      listItem.label = rowLabels[row].c_str();
+      listItem.value = rowValues[row].c_str();
+    } else {
+      const int itemIndex = itemIndexFromRow(row);
+      const auto& ebook = items[itemIndex];
+      listItem.label = ebook.title.empty() ? ebook.fileName.c_str() : ebook.title.c_str();
+      rowSubtitles[row] = itemSubtitleText(ebook);
+      listItem.subtitle = rowSubtitles[row].c_str();
+      if (isDownloadable(ebook)) {
+        rowValues[row] = ebook.downloaded ? tr(STR_CROSSFRONT_EBOOK_DOWNLOADED) : tr(STR_DOWNLOAD);
+        listItem.value = rowValues[row].c_str();
       }
+      if (!ebook.thumbnailBits.empty()) {
+        listItem.icon = fui::BitmapRef{ebook.thumbnailBits.data(), THUMBNAIL_WIDTH, THUMBNAIL_HEIGHT,
+                                      fui::BitmapFormat::BW1, false};
+      }
+      if (!isDownloadable(ebook)) listItem.state = fui::StateDisabled;
+    }
+    listItem.actionValue = static_cast<int16_t>(row);
+    rowItems.push_back(listItem);
+  }
+  rowsDirty = false;
+}
+
+void CrossFrontSyncFilesActivity::buildScreen(UiScreen& screen) {
+  const auto& metrics = UITheme::getInstance().getMetrics();
+  screen.setContentMarginFromScreen(fui::Insets{static_cast<int16_t>(metrics.topPadding + metrics.headerHeight), 0,
+                                                static_cast<int16_t>(metrics.buttonHintsHeight), 0});
+  screen.spacer(static_cast<int16_t>(metrics.verticalSpacing));
+  if (items.empty()) {
+    screen.centeredText(tr(STR_CROSSFRONT_EBOOK_EMPTY), screen.theme().bodyText);
+    return;
+  }
+  if (rowsDirty) rebuildRows();
+
+  fui::ListProps props;
+  props.items = rowItems.data();
+  props.count = static_cast<uint16_t>(rowItems.size());
+  props.action = ACTION_ROW;
+  props.inputMask = fui::InputTouch;
+  props.valueInset = 8;
+  props.rowHeight = 64;
+  props.rowPaddingY = 5;
+  props.iconSize = 48;
+  props.labelText = screen.theme().bodyText;
+  props.labelText.maxLines = 1;
+  props.subtitleText = screen.theme().smallText;
+  props.subtitleText.maxLines = 1;
+  syncListViewport(screen, props);
+  screen.list(props);
+  if (state == State::DOWNLOADING && activeDownloadIndex >= 0 &&
+      activeDownloadIndex < static_cast<int>(items.size())) {
+    const int percent = crossfront::downloadProgressPercent(fileBytesDownloaded, fileBytesTotal);
+    const std::string message = items[activeDownloadIndex].fileName + "\n" + std::to_string(percent) + "%";
+    fui::PopupProps popup;
+    popup.message = message.c_str();
+    popup.showProgress = true;
+    popup.progress.value = percent;
+    popup.progress.max = 100;
+    popup.progress.border = fui::Paint::solid(fui::Color::Black);
+    popup.progress.borderWidth = 1;
+    popup.progressHeight = 10;
+    screen.popup(popup);
+  }
+}
+
+void CrossFrontSyncFilesActivity::activateIndex(const int row) {
+  if (state != State::BROWSING) return;
+  app.clearTapFlash();
+  if (isPreviousRow(row)) {
+    state = State::FETCHING_LIST;
+    rowsDirty = true;
+    pendingPage = page - 1;
+    requestUpdate(true);
+    return;
+  }
+  if (isNextRow(row)) {
+    state = State::FETCHING_LIST;
+    rowsDirty = true;
+    pendingPage = page + 1;
+    requestUpdate(true);
+    return;
+  }
+  const int itemIndex = itemIndexFromRow(row);
+  if (itemIndex >= 0 && isDownloadable(items[itemIndex])) promptDownload(itemIndex);
+}
+
+void CrossFrontSyncFilesActivity::promptDownload(const int itemIndex) {
+  if (itemIndex < 0 || itemIndex >= static_cast<int>(items.size())) return;
+  const std::string body = items[itemIndex].fileName.empty() ? items[itemIndex].title : items[itemIndex].fileName;
+  auto confirmation = makeUniqueNoThrow<ConfirmationActivity>(renderer, mappedInput, tr(STR_DOWNLOAD), body);
+  if (!confirmation) {
+    LOG_ERR("CF", "OOM: ebook download confirmation");
+    return;
+  }
+  startActivityForResult(std::move(confirmation),
+                         [this, itemIndex](const ActivityResult& result) { onDownloadConfirmation(itemIndex, result); });
+}
+
+void CrossFrontSyncFilesActivity::onDownloadConfirmation(const int itemIndex, const ActivityResult& result) {
+  if (result.isCancelled || itemIndex < 0 || itemIndex >= static_cast<int>(items.size())) {
+    requestUpdate();
+    return;
+  }
+  activeDownloadIndex = itemIndex;
+  retryAction = RetryAction::NONE;
+  errorMessage.clear();
+  clearPendingDownloadStatus();
+  pendingMediaId = items[itemIndex].mediaId;
+  pendingMediaRevision = items[itemIndex].revision;
+  pendingDownloadId = makeDownloadId(deviceId);
+  fileBytesDownloaded = 0;
+  fileBytesTotal = items[itemIndex].size;
+  cancelRequested = false;
+  state = State::DOWNLOADING;
+  requestUpdateAndWait();
+
+  const bool downloaded = downloadSingleFile(items[itemIndex], pendingDownloadId);
+  if (downloaded) {
+    items[itemIndex].downloaded = true;
+    rowsDirty = true;
+  }
+  if (cancelRequested) {
+    retryAction = RetryAction::NONE;
+    clearPendingDownloadStatus();
+    state = State::BROWSING;
+  } else if (!downloaded) {
+    clearPendingDownloadStatus();
+    errorMessage = tr(STR_CROSSFRONT_EBOOK_DOWNLOAD_FAILED);
+    retryAction = RetryAction::FETCH_LIST;
+    state = State::ERROR_STATE;
+  } else {
+    retryAction = RetryAction::SYNC_DOWNLOAD_STATUS;
+    state = State::SYNCING_DOWNLOAD_STATUS;
+  }
+  requestUpdate(true);
+}
+
+void CrossFrontSyncFilesActivity::clearPendingDownloadStatus() {
+  pendingMediaId.clear();
+  pendingDownloadId.clear();
+  pendingMediaRevision = 0;
+}
+
+bool CrossFrontSyncFilesActivity::handleCustomInput() {
+  if (state == State::BROWSING) return false;
+
+  if (state == State::CONNECTING_WIFI) {
+    if (!CrossFrontService::connectWifiQuick(15000)) {
+      errorMessage = tr(STR_CROSSFRONT_ERR_WIFI);
+      retryAction = RetryAction::CONNECT_WIFI;
+      state = State::ERROR_STATE;
+    } else {
+      retryAction = RetryAction::NONE;
+      errorMessage.clear();
       state = State::FETCHING_LIST;
-      requestUpdate(true);
-      return;
     }
-
-    case State::FETCHING_LIST: {
-      const bool listOk = fetchFileList();
-      if (!listOk) {
-        state = State::ERROR_STATE;
-        if (errorMessage.empty()) {
-          errorMessage = tr(STR_CROSSFRONT_ERR_SERVER);
-        }
-        requestUpdate(true);
-        return;
-      }
-      if (pendingFiles.empty()) {
-        state = State::NO_FILES;
-        requestUpdate(true);
-        return;
-      }
-      state = State::DOWNLOADING;
-      currentFileIndex = 0;
-      requestUpdate(true);
-      return;
-    }
-
-    case State::DOWNLOADING: {
-      if (cancelRequested) {
-        finish();
-        return;
-      }
-
-      if (currentFileIndex < pendingFiles.size()) {
-        const auto& file = pendingFiles[currentFileIndex];
-        const bool ok = downloadSingleFile(file);
-        if (cancelRequested) {
-          finish();
-          return;
-        }
-
-        if (!ok) {
-          state = State::ERROR_STATE;
-          errorMessage = tr(STR_CROSSFRONT_ERR_SERVER);
-          requestUpdate(true);
-          return;
-        }
-        if (!markFileDone(file.id, file.revision)) {
-          state = State::ERROR_STATE;
-          errorMessage = tr(STR_CROSSFRONT_ERR_SERVER);
-          requestUpdate(true);
-          return;
-        }
-        downloadedSuccessCount++;
-
-        currentFileIndex++;
-        if (currentFileIndex < pendingFiles.size()) {
-          requestUpdate(true);
-        } else {
-          state = State::COMPLETE;
-          requestUpdate(true);
-        }
-      }
-      return;
-    }
-
-    case State::COMPLETE:
-    case State::NO_FILES:
-    case State::ERROR_STATE:
-      break;
+    requestUpdate(true);
+    return true;
   }
+
+  if (state == State::FETCHING_LIST) {
+    if (!fetchPage(pendingPage)) {
+      if (errorMessage.empty()) errorMessage = tr(STR_CROSSFRONT_ERR_SERVER);
+      retryAction = RetryAction::FETCH_LIST;
+      state = State::ERROR_STATE;
+    } else {
+      retryAction = RetryAction::NONE;
+      errorMessage.clear();
+      state = State::BROWSING;
+      nav.reset();
+      rowsDirty = true;
+    }
+    requestUpdate(true);
+    return true;
+  }
+
+  if (state == State::SYNCING_DOWNLOAD_STATUS) {
+    const bool acknowledged = !pendingMediaId.empty() && !pendingDownloadId.empty() &&
+                              markFileDone(pendingMediaId, pendingMediaRevision, pendingDownloadId);
+    if (acknowledged) {
+      retryAction = RetryAction::NONE;
+      errorMessage.clear();
+      if (activeDownloadIndex >= 0 && activeDownloadIndex < static_cast<int>(items.size())) {
+        items[activeDownloadIndex].downloaded = true;
+        rowsDirty = true;
+      }
+      clearPendingDownloadStatus();
+      state = State::BROWSING;
+    } else {
+      if (activeDownloadIndex >= 0 && activeDownloadIndex < static_cast<int>(items.size())) {
+        items[activeDownloadIndex].downloaded = false;
+        rowsDirty = true;
+      }
+      errorMessage = tr(STR_CROSSFRONT_EBOOK_STATUS_SYNC_FAILED);
+      retryAction = RetryAction::SYNC_DOWNLOAD_STATUS;
+      state = State::ERROR_STATE;
+    }
+    requestUpdate(true);
+    return true;
+  }
+
+  if (state == State::DOWNLOADING) return true;
+
+  int x = 0;
+  int y = 0;
+  const bool tapped = mappedInput.wasScreenTapped(x, y);
+  if (state == State::ERROR_STATE) {
+    if (mappedInput.wasReleased(MappedInputManager::Button::Confirm) || tapped) {
+      errorMessage.clear();
+      if (retryAction == RetryAction::CONNECT_WIFI) {
+        state = State::CONNECTING_WIFI;
+      } else if (retryAction == RetryAction::SYNC_DOWNLOAD_STATUS && !pendingMediaId.empty() &&
+                 !pendingDownloadId.empty()) {
+        state = State::SYNCING_DOWNLOAD_STATUS;
+      } else {
+        state = State::FETCHING_LIST;
+      }
+      requestUpdate(true);
+    } else if (mappedInput.wasReleased(MappedInputManager::Button::Back)) {
+      if (items.empty()) {
+        finish();
+      } else {
+        state = State::BROWSING;
+        requestUpdate();
+      }
+    }
+    return true;
+  }
+  return true;
 }
 
-bool CrossFrontSyncFilesActivity::fetchFileList() {
-  const char* serverUrl = CROSSFRONT_SETTINGS.getServerUrl();
-  std::string server = std::string(serverUrl);
-  if (!server.empty() && server.back() == '/') {
-    server.pop_back();
-  }
-
-  const char* token = CROSSFRONT_SETTINGS.deviceToken;
-
-  std::string filesUrl = server + "/api/cf/device/" + deviceId + "/files";
+bool CrossFrontSyncFilesActivity::fetchPage(const uint32_t requestedPage) {
+  std::string server = CROSSFRONT_SETTINGS.getServerUrl();
+  if (!server.empty() && server.back() == '/') server.pop_back();
+  const std::string url = server + "/api/cf/device/" + deviceId + "/ebooks?page=" +
+                          std::to_string(requestedPage) + "&perPage=" + std::to_string(perPage);
   std::string jsonBody;
   bool responseTooLarge = false;
 
   freeink::SecureHttpClient http;
   http.setTimeout(15000);
   http.setInsecure();
-  if (!http.begin(filesUrl)) {
-    errorMessage = tr(STR_CROSSFRONT_ERR_SERVER);
-    return false;
-  }
-
+  if (!http.begin(url)) return false;
   http.setUserAgent("CrossPoint-ESP32");
-  auto extraHeaders = makeHeaders(deviceId, token);
-  for (const auto& h : extraHeaders) {
-    http.addHeader(h.first.c_str(), h.second.c_str());
+  for (const auto& header : makeHeaders(CROSSFRONT_SETTINGS.deviceToken)) {
+    http.addHeader(header.first.c_str(), header.second.c_str());
   }
-
   const int httpCode = http.sendRequest("GET", nullptr, 0, [&jsonBody, &responseTooLarge](const uint8_t* data, size_t len) {
-    if (len > MAX_FILE_LIST_RESPONSE_BYTES || jsonBody.size() > MAX_FILE_LIST_RESPONSE_BYTES - len) {
+    if (len > MAX_PAGE_RESPONSE_BYTES || jsonBody.size() > MAX_PAGE_RESPONSE_BYTES - len) {
       responseTooLarge = true;
       return false;
     }
     jsonBody.append(reinterpret_cast<const char*>(data), len);
     return true;
   });
-  const std::string novelStatusHeader = http.getHeader("x-crossfront-novel-status");
-  const std::string novelCrawledHeader = http.getHeader("x-crossfront-novel-crawled");
   const bool responseComplete = http.responseComplete();
   http.end();
 
   if (httpCode != 200) {
-    LOG_ERR("CF", "fetchFileList failed: HTTP %d", httpCode);
-    if (httpCode == 401 || httpCode == 404) {
-      errorMessage = tr(STR_CROSSFRONT_ERR_NOT_PAIRED);
-    } else {
-      errorMessage = tr(STR_CROSSFRONT_ERR_SERVER);
-    }
+    errorMessage = (httpCode == 401 || httpCode == 404) ? tr(STR_CROSSFRONT_ERR_NOT_PAIRED)
+                                                        : tr(STR_CROSSFRONT_ERR_SERVER);
     return false;
   }
-
-  if (responseTooLarge || !responseComplete) {
-    LOG_ERR("CF", "fetchFileList received an oversized or incomplete response");
-    errorMessage = tr(STR_CROSSFRONT_ERR_SERVER);
-    return false;
-  }
-
-  novelProgress = NovelProgress::NONE;
-  novelCrawledChapters = 0;
-  if (novelStatusHeader == "crawling") {
-    novelProgress = NovelProgress::CRAWLING;
-    char* end = nullptr;
-    const unsigned long parsed = strtoul(novelCrawledHeader.c_str(), &end, 10);
-    if (end != novelCrawledHeader.c_str() && end && *end == '\0' && parsed <= 100000UL) {
-      novelCrawledChapters = static_cast<uint32_t>(parsed);
-    }
-  } else if (novelStatusHeader == "packaging") {
-    novelProgress = NovelProgress::PACKAGING;
-  }
+  if (responseTooLarge || !responseComplete || jsonBody.empty()) return false;
 
   JsonDocument doc;
-  if (jsonBody.empty()) {
-    LOG_ERR("CF", "fetchFileList received an empty response body");
-    errorMessage = tr(STR_CROSSFRONT_ERR_SERVER);
+  const auto jsonError = deserializeJson(doc, &jsonBody[0], jsonBody.size());
+  if (jsonError != DeserializationError::Ok || !doc.is<JsonObject>()) return false;
+  const JsonObjectConst root = doc.as<JsonObjectConst>();
+  const JsonVariantConst pageValue = root["page"];
+  const JsonVariantConst perPageValue = root["perPage"];
+  const JsonVariantConst totalItemsValue = root["totalItems"];
+  const JsonVariantConst totalPagesValue = root["totalPages"];
+  const JsonVariantConst ebookDirValue = root["ebookDir"];
+  const JsonVariantConst itemsValue = root["items"];
+  if (!pageValue.is<uint32_t>() || !perPageValue.is<uint32_t>() || !totalItemsValue.is<uint32_t>() ||
+      !totalPagesValue.is<uint32_t>() || !ebookDirValue.is<const char*>() || !itemsValue.is<JsonArrayConst>()) {
     return false;
   }
-  // Parse in zero-copy mode so the bounded response buffer is not duplicated in
-  // the dynamic JsonDocument on low-heap ESP32 variants.
-  const auto err = deserializeJson(doc, &jsonBody[0], jsonBody.size());
-  if (err != DeserializationError::Ok || !doc.is<JsonArray>()) {
-    LOG_ERR("CF", "fetchFileList: JSON parse or shape error");
-    errorMessage = tr(STR_CROSSFRONT_ERR_SERVER);
+
+  const std::string ebookDir = ebookDirValue.as<const char*>();
+  if (!crossfront::isSafeEbookFolder(ebookDir)) return false;
+  if (ebookDir != CROSSFRONT_SETTINGS.getEbookDir()) {
+    CROSSFRONT_SETTINGS.setEbookDir(ebookDir.c_str());
+    if (ebookDir != CROSSFRONT_SETTINGS.getEbookDir() || !CROSSFRONT_SETTINGS.saveToFile()) return false;
+  }
+  if (!ensureTargetFolderExists(ebookDir)) return false;
+
+  const uint32_t parsedPage = pageValue.as<uint32_t>();
+  const uint32_t parsedPerPage = perPageValue.as<uint32_t>();
+  const uint32_t parsedTotalPages = totalPagesValue.as<uint32_t>();
+  const JsonArrayConst array = itemsValue.as<JsonArrayConst>();
+  if (parsedPage == 0 || parsedPerPage == 0 || parsedPerPage > 50 || parsedTotalPages > MAX_TOTAL_PAGES ||
+      array.size() > parsedPerPage) {
     return false;
   }
 
-  pendingFiles.clear();
-  const auto arr = doc.as<JsonArray>();
-  if (arr.size() > MAX_FILE_LIST_ITEMS) {
-    LOG_ERR("CF", "fetchFileList received too many assignments");
-    errorMessage = tr(STR_CROSSFRONT_ERR_SERVER);
-    return false;
-  }
-  pendingFiles.reserve(arr.size());
-  for (JsonVariantConst value : arr) {
-    if (!value.is<JsonObjectConst>()) {
-      LOG_ERR("CF", "Rejecting file list with a non-object assignment");
-      pendingFiles.clear();
-      errorMessage = tr(STR_CROSSFRONT_ERR_SERVER);
-      return false;
-    }
-    const JsonObjectConst obj = value.as<JsonObjectConst>();
-    const JsonVariantConst downloadedValue = obj["downloaded"];
-    if (downloadedValue.is<ArduinoJson::JsonVariantConst>() && !downloadedValue.is<bool>()) {
-      LOG_ERR("CF", "Rejecting file list with an invalid downloaded flag");
-      pendingFiles.clear();
-      errorMessage = tr(STR_CROSSFRONT_ERR_SERVER);
+  std::vector<EbookItem> parsedItems;
+  parsedItems.reserve(array.size());
+  for (const JsonVariantConst value : array) {
+    if (!value.is<JsonObjectConst>()) return false;
+    const JsonObjectConst object = value.as<JsonObjectConst>();
+    if (!object["id"].is<const char*>() || !object["title"].is<const char*>() ||
+        !object["status"].is<const char*>() || !object["crawled"].is<uint32_t>() ||
+        !object["total"].is<uint32_t>() || !object["downloaded"].is<bool>()) {
       return false;
     }
 
-    const JsonVariantConst idValue = obj["id"];
-    const JsonVariantConst fileNameValue = obj["fileName"];
-    const JsonVariantConst legacyNameValue = obj["name"];
-    const JsonVariantConst typeValue = obj["type"];
-    const JsonVariantConst folderValue = obj["folder"];
-    const JsonVariantConst sizeValue = obj["size"];
-    const JsonVariantConst revisionValue = obj["revision"];
-    const bool hasFileName = fileNameValue.is<ArduinoJson::JsonVariantConst>();
-    const JsonVariantConst selectedNameValue = hasFileName ? fileNameValue : legacyNameValue;
-    if (!idValue.is<const char*>() || !selectedNameValue.is<const char*>() || !typeValue.is<const char*>() ||
-        !folderValue.is<const char*>() || !sizeValue.is<size_t>() || !revisionValue.is<uint32_t>()) {
-      LOG_ERR("CF", "Rejecting file list with malformed assignment fields");
-      pendingFiles.clear();
-      errorMessage = tr(STR_CROSSFRONT_ERR_SERVER);
+    EbookItem item;
+    item.title = object["title"].as<const char*>();
+    item.status = object["status"].as<const char*>();
+    item.mediaId = object["mediaId"] | "";
+    item.fileName = object["fileName"] | "";
+    item.sourceType = object["sourceType"] | "upload";
+    item.size = object["size"] | 0U;
+    item.revision = object["revision"] | 0U;
+    item.crawled = object["crawled"].as<uint32_t>();
+    item.total = object["total"].as<uint32_t>();
+    item.downloaded = object["downloaded"].as<bool>();
+    decodeThumbnailBmp(object["thumbnailBmp"] | "", item.thumbnailBits);
+    if (!crossfront::isSafeMediaId(object["id"].as<const char*>()) || item.title.empty() || item.title.size() > 1024 ||
+        !isKnownStatus(item.status)) {
       return false;
     }
-
-    FileItem item;
-    item.id = idValue.as<const char*>();
-    item.name = selectedNameValue.as<const char*>();
-    item.type = typeValue.as<const char*>();
-    item.folder = folderValue.as<const char*>();
-    item.size = sizeValue.as<size_t>();
-    item.revision = revisionValue.as<uint32_t>();
-    item.downloaded = false;
-    if (!crossfront::isSafeFileAssignment(item.id, item.name, item.type, item.revision) ||
-        (!item.folder.empty() && !crossfront::isSafeTargetFolder(item.folder))) {
-      LOG_ERR("CF", "Rejecting file list with an unsafe assignment");
-      pendingFiles.clear();
-      errorMessage = tr(STR_CROSSFRONT_ERR_SERVER);
-      return false;
+    if (item.status == "ready" && !isDownloadable(item)) {
+      item.mediaId.clear();
+      item.fileName.clear();
+      item.size = 0;
+      item.revision = 0;
+      item.downloaded = false;
+    } else if (item.status == "ready") {
+      item.downloaded = isFilePresent(item);
     }
-    if (downloadedValue.is<bool>() && downloadedValue.as<bool>()) continue;
-    pendingFiles.push_back(std::move(item));
+    parsedItems.push_back(std::move(item));
   }
 
-  LOG_INF("CF", "Found %u pending files to download", static_cast<unsigned>(pendingFiles.size()));
+  if (!syncLocalPresence(parsedItems)) {
+    LOG_ERR("CF", "Failed to reconcile local ebook presence");
+  }
 
+  items = std::move(parsedItems);
+  page = parsedPage;
+  perPage = parsedPerPage;
+  totalPages = parsedTotalPages;
   return true;
 }
 
-namespace {
-
-std::string extractFontFamilyName(const std::string& filename) {
-  const size_t dotPos = filename.rfind('.');
-  std::string base = (dotPos != std::string::npos) ? filename.substr(0, dotPos) : filename;
-
-  const size_t underPos = base.rfind('_');
-  if (underPos != std::string::npos && underPos > 0) {
-    bool allDigits = true;
-    for (size_t i = underPos + 1; i < base.length(); ++i) {
-      if (!isdigit(static_cast<unsigned char>(base[i]))) {
-        allDigits = false;
-        break;
-      }
-    }
-    if (allDigits && underPos + 1 < base.length()) {
-      return base.substr(0, underPos);
-    }
-  }
-  return base;
-}
-
-}  // namespace
-
-std::string CrossFrontSyncFilesActivity::resolveAndSanitizeTargetFolder(const FileItem& file) const {
-  if (file.type == "font") {
-    if (file.folder == "/.fonts" || file.folder.rfind("/.fonts/", 0) == 0 ||
-        file.folder == "/fonts" || file.folder.rfind("/fonts/", 0) == 0) {
-      return file.folder;
-    }
-    const char* root = Storage.exists("/.fonts") ? "/.fonts" : (Storage.exists("/fonts") ? "/fonts" : "/.fonts");
-    std::string family = extractFontFamilyName(file.name);
-    if (!family.empty()) {
-      return std::string(root) + "/" + family;
-    }
-    return std::string(root);
-  }
-  if (file.type == "sleep") {
-    if (Storage.exists("/sleep")) {
-      return "/sleep";
-    }
-    if (Storage.exists("/.sleep")) {
-      return "/.sleep";
-    }
-    return "/sleep";
-  }
-
-  std::string folder = file.folder;
-  if (folder.empty()) {
-    folder = CROSSFRONT_SETTINGS.getEbookDir();
-    // Auto-detect existing "/Books" on user's SD card if not explicitly overridden
-    if (folder == CrossFrontSettings::DEFAULT_EBOOK_DIR && Storage.exists("/Books")) {
-      folder = "/Books";
-    }
-  }
-
-  while (!folder.empty() && (folder.front() == ' ' || folder.front() == '\t')) {
-    folder.erase(folder.begin());
-  }
-  while (!folder.empty() && (folder.back() == ' ' || folder.back() == '\t')) {
-    folder.pop_back();
-  }
-
-  for (auto& c : folder) {
-    if (c == '\\') c = '/';
-  }
-
-  // Never allow empty or root "/"
-  if (folder.empty() || folder == "/") {
-    folder = CrossFrontSettings::DEFAULT_EBOOK_DIR;
-  }
-
-  if (folder.front() != '/') {
-    folder = "/" + folder;
-  }
-
-  while (folder.length() > 1 && folder.back() == '/') {
-    folder.pop_back();
-  }
-
-  if (folder == "/") {
-    folder = CrossFrontSettings::DEFAULT_EBOOK_DIR;
-  }
-
-  return folder;
-}
-
 bool CrossFrontSyncFilesActivity::ensureTargetFolderExists(const std::string& folder) const {
-  if (folder.empty() || folder == "/") {
-    return false;
-  }
-
-  if (Storage.exists(folder.c_str())) {
-    return true;
-  }
-
-  LOG_INF("CF", "Target directory does not exist, creating: %s", folder.c_str());
-
-  bool ok = Storage.ensureDirectoryExists(folder.c_str());
-  if (!ok) {
-    ok = Storage.mkdir(folder.c_str(), true);
-  }
-
-  if (!Storage.exists(folder.c_str())) {
-    std::string partial = "";
-    for (size_t i = 0; i < folder.length(); ++i) {
-      if (folder[i] == '/' && !partial.empty()) {
-        if (!Storage.exists(partial.c_str())) {
-          Storage.mkdir(partial.c_str(), false);
-        }
-      }
-      partial += folder[i];
-    }
-    if (!partial.empty() && !Storage.exists(partial.c_str())) {
-      Storage.mkdir(partial.c_str(), false);
-    }
-  }
-
-  const bool verified = Storage.exists(folder.c_str());
-  if (!verified) {
-    LOG_ERR("CF", "Failed to create target directory on SD: %s", folder.c_str());
-  }
-  return verified;
+  if (!crossfront::isSafeTargetFolder(folder)) return false;
+  if (Storage.exists(folder.c_str())) return true;
+  return Storage.ensureDirectoryExists(folder.c_str()) && Storage.exists(folder.c_str());
 }
 
-bool CrossFrontSyncFilesActivity::downloadSingleFile(const FileItem& file) {
-  if (!crossfront::isSafeAssignmentId(file.id) || !crossfront::isSafeFileName(file.name)) {
-    LOG_ERR("CF", "Unsafe file assignment ID or name rejected");
-    return false;
-  }
+bool CrossFrontSyncFilesActivity::downloadSingleFile(const EbookItem& item, const std::string& downloadId) {
+  if (!isDownloadable(item) || !crossfront::isSafeDownloadId(downloadId)) return false;
+  const std::string folder = CROSSFRONT_SETTINGS.getEbookDir();
+  if (!ensureTargetFolderExists(folder)) return false;
 
+  if (auto* cache = renderer.getFontCacheManager()) cache->releaseSdFontCaches();
   if (ESP.getFreeHeap() < HttpDownloader::MIN_TLS_FREE_HEAP ||
       ESP.getMaxAllocHeap() < HttpDownloader::MIN_TLS_MAX_ALLOC) {
-    LOG_ERR("CF", "Low heap before file download (%u free, %u max block)", ESP.getFreeHeap(), ESP.getMaxAllocHeap());
+    LOG_ERR("CF", "Low heap for ebook download (%u free, %u max block)", ESP.getFreeHeap(), ESP.getMaxAllocHeap());
     return false;
   }
 
-  const std::string folder = resolveAndSanitizeTargetFolder(file);
-  if (!crossfront::isSafeTargetFolder(folder)) {
-    LOG_ERR("CF", "Unsafe target folder rejected");
-    return false;
-  }
-  if (!ensureTargetFolderExists(folder)) {
-    LOG_ERR("CF", "Target folder missing and cannot be created: %s", folder.c_str());
-    return false;
-  }
+  const std::string destination = folder + "/" + item.fileName;
+  const std::string temporary = destination + ".tmp";
+  if (Storage.exists(temporary.c_str())) Storage.remove(temporary.c_str());
 
-  std::string destPath = folder + "/" + file.name;
-
-  // Guard: Must not save directly to root
-  if (destPath.length() <= 1 || destPath.find('/', 1) == std::string::npos) {
-    LOG_ERR("CF", "Illegal root destination rejected: %s", destPath.c_str());
-    destPath = std::string(CrossFrontSettings::DEFAULT_EBOOK_DIR) + "/" + file.name;
-    ensureTargetFolderExists(CrossFrontSettings::DEFAULT_EBOOK_DIR);
-  }
-
-  const std::string tmpPath = destPath + ".tmp";
-  if (Storage.exists(tmpPath.c_str())) {
-    Storage.remove(tmpPath.c_str());
-  }
-
-  const char* serverUrl = CROSSFRONT_SETTINGS.getServerUrl();
-  std::string server = std::string(serverUrl);
-  if (!server.empty() && server.back() == '/') {
-    server.pop_back();
-  }
-
-  const char* token = CROSSFRONT_SETTINGS.deviceToken;
-  std::string downloadUrl = server + "/api/cf/device/" + deviceId + "/files/" + file.id + "/download";
-
-  auto extraHeaders = makeHeaders(deviceId, token);
-  char revisionHeader[16];
-  snprintf(revisionHeader, sizeof(revisionHeader), "%u", static_cast<unsigned>(file.revision));
-  extraHeaders.emplace_back("X-Media-Revision", revisionHeader);
+  std::string server = CROSSFRONT_SETTINGS.getServerUrl();
+  if (!server.empty() && server.back() == '/') server.pop_back();
+  const std::string url = server + "/api/cf/device/" + deviceId + "/ebooks/" + item.mediaId + "/download";
+  auto headers = makeHeaders(CROSSFRONT_SETTINGS.deviceToken);
+  headers.emplace_back("X-Media-Revision", std::to_string(item.revision));
+  headers.emplace_back("X-Download-Id", downloadId);
 
   fileBytesDownloaded = 0;
-  fileBytesTotal = file.size;
+  fileBytesTotal = item.size;
   int lastRenderedPercent = -1;
   unsigned long lastProgressUpdateMs = millis();
-  const size_t expectedFileSize = file.size;
-
-  LOG_INF("CF", "Downloading %s -> %s (temp: %s)", downloadUrl.c_str(), destPath.c_str(), tmpPath.c_str());
-
+  const size_t expectedSize = item.size;
+  bool responseTooLarge = false;
   const auto result = HttpDownloader::downloadToFile(
-      downloadUrl, tmpPath,
-      [this, &lastRenderedPercent, &lastProgressUpdateMs, expectedFileSize](const size_t downloaded,
-                                                                              const size_t total) {
-        if (expectedFileSize > 0 && downloaded > expectedFileSize) {
+      url, temporary,
+      [this, &lastRenderedPercent, &lastProgressUpdateMs, expectedSize,
+       &responseTooLarge](const size_t downloaded, const size_t) {
+        if (downloaded > expectedSize) {
+          responseTooLarge = true;
           cancelRequested = true;
           return;
         }
         fileBytesDownloaded = downloaded;
-        if (total > 0) fileBytesTotal = total;
-
         mappedInput.update(true);
-        if (mappedInput.wasReleased(MappedInputManager::Button::Back)) {
-          cancelRequested = true;
-        }
-
+        if (mappedInput.wasReleased(MappedInputManager::Button::Back)) cancelRequested = true;
         const int percent = crossfront::downloadProgressPercent(fileBytesDownloaded, fileBytesTotal);
         const unsigned long now = millis();
         if (percent >= 100 || lastRenderedPercent < 0 || percent >= lastRenderedPercent + 5 ||
@@ -541,179 +636,131 @@ bool CrossFrontSyncFilesActivity::downloadSingleFile(const FileItem& file) {
           requestUpdate(true);
         }
       },
-      &cancelRequested, "", "", false, 120000, "", nullptr, extraHeaders);
+      &cancelRequested, "", "", false, 120000, "", nullptr, headers);
 
+  if (responseTooLarge) cancelRequested = false;
   if (cancelRequested || result != HttpDownloader::OK) {
-    LOG_ERR("CF", "Download failed or cancelled (err %d, cancel %d). Cleaning up temp file: %s",
-            static_cast<int>(result), cancelRequested ? 1 : 0, tmpPath.c_str());
-    if (Storage.exists(tmpPath.c_str())) {
-      Storage.remove(tmpPath.c_str());
-    }
+    if (Storage.exists(temporary.c_str())) Storage.remove(temporary.c_str());
     return false;
   }
-
-  HalFile checkTmp;
-  if (!Storage.openFileForRead("CF", tmpPath, checkTmp)) {
-    LOG_ERR("CF", "Cannot open downloaded temp file: %s", tmpPath.c_str());
-    if (Storage.exists(tmpPath.c_str())) {
-      Storage.remove(tmpPath.c_str());
-    }
+  HalFile downloadedFile;
+  if (!Storage.openFileForRead("CF", temporary, downloadedFile)) {
+    Storage.remove(temporary.c_str());
     return false;
   }
-  const size_t actualBytes = checkTmp.size();
-  checkTmp.close();
-
-  if (actualBytes == 0 ||
-      (file.size > 0 && !crossfront::isExpectedDownloadedSize(actualBytes, file.size))) {
-    LOG_ERR("CF", "Downloaded temp file size mismatch: got %u, expected %u: %s",
-            static_cast<unsigned>(actualBytes), static_cast<unsigned>(file.size), tmpPath.c_str());
-    Storage.remove(tmpPath.c_str());
+  const size_t actualSize = downloadedFile.size();
+  downloadedFile.close();
+  if (!crossfront::isExpectedDownloadedSize(actualSize, item.size)) {
+    Storage.remove(temporary.c_str());
     return false;
   }
-
-  if (!crossfront::replaceDownloadedFile(Storage, tmpPath, destPath)) {
-    LOG_ERR("CF", "Failed to commit temp file %s to %s", tmpPath.c_str(), destPath.c_str());
-    Storage.remove(tmpPath.c_str());
+  if (!crossfront::replaceDownloadedFile(Storage, temporary, destination)) {
+    Storage.remove(temporary.c_str());
     return false;
   }
-
-  if (file.type == "book") {
-    clearBookCache(destPath);
-    library::markLibraryIndexDirty();
-  } else if (file.type == "font") {
-    sdFontSystem.markRegistryDirty();
-  }
-
-  LOG_INF("CF", "Successfully saved %s (%u bytes)", destPath.c_str(), static_cast<unsigned>(actualBytes));
+  clearBookCache(destination);
+  library::markLibraryIndexDirty();
   return true;
 }
 
-bool CrossFrontSyncFilesActivity::markFileDone(const std::string& fileId, const uint32_t revision) {
-  const char* serverUrl = CROSSFRONT_SETTINGS.getServerUrl();
-  std::string server = std::string(serverUrl);
-  if (!server.empty() && server.back() == '/') {
-    server.pop_back();
+bool CrossFrontSyncFilesActivity::syncLocalPresence(const std::vector<EbookItem>& pageItems) {
+  JsonDocument doc;
+  JsonArray presence = doc["items"].to<JsonArray>();
+  for (const auto& item : pageItems) {
+    if (!isDownloadable(item)) continue;
+    JsonObject entry = presence.add<JsonObject>();
+    entry["mediaId"] = item.mediaId;
+    entry["revision"] = item.revision;
+    entry["present"] = item.downloaded;
   }
+  if (presence.size() == 0) return true;
 
-  const char* token = CROSSFRONT_SETTINGS.deviceToken;
-  std::string doneUrl = server + "/api/cf/device/" + deviceId + "/files/" + fileId + "/done";
-
+  std::string payload;
+  serializeJson(doc, payload);
+  std::string server = CROSSFRONT_SETTINGS.getServerUrl();
+  if (!server.empty() && server.back() == '/') server.pop_back();
+  const std::string url = server + "/api/cf/device/" + deviceId + "/ebooks/presence";
   freeink::SecureHttpClient http;
   http.setTimeout(10000);
   http.setInsecure();
-  if (!http.begin(doneUrl)) return false;
+  if (!http.begin(url)) return false;
   http.setUserAgent("CrossPoint-ESP32");
-  auto extraHeaders = makeHeaders(deviceId, token);
-  for (const auto& h : extraHeaders) {
-    http.addHeader(h.first.c_str(), h.second.c_str());
+  http.addHeader("Content-Type", "application/json");
+  for (const auto& header : makeHeaders(CROSSFRONT_SETTINGS.deviceToken)) {
+    http.addHeader(header.first.c_str(), header.second.c_str());
   }
-  char revisionHeader[16];
-  snprintf(revisionHeader, sizeof(revisionHeader), "%u", static_cast<unsigned>(revision));
-  http.addHeader("X-Media-Revision", revisionHeader);
-  const int httpCode = http.sendRequest("POST", nullptr, 0, nullptr);
+  const int httpCode = http.sendRequest(
+      "POST", reinterpret_cast<const uint8_t*>(payload.data()), payload.size(), nullptr);
   http.end();
-  if (httpCode != 200) {
-    LOG_ERR("CF", "markFileDone failed: HTTP %d", httpCode);
-    return false;
-  }
-  return true;
+  return httpCode == 200;
 }
 
-void CrossFrontSyncFilesActivity::render(RenderLock&&) {
+bool CrossFrontSyncFilesActivity::markFileDone(const std::string& mediaId, const uint32_t revision,
+                                                const std::string& downloadId) {
+  std::string server = CROSSFRONT_SETTINGS.getServerUrl();
+  if (!server.empty() && server.back() == '/') server.pop_back();
+  const std::string url = server + "/api/cf/device/" + deviceId + "/ebooks/" + mediaId + "/done";
+  freeink::SecureHttpClient http;
+  http.setTimeout(10000);
+  http.setInsecure();
+  if (!http.begin(url)) return false;
+  http.setUserAgent("CrossPoint-ESP32");
+  for (const auto& header : makeHeaders(CROSSFRONT_SETTINGS.deviceToken)) {
+    http.addHeader(header.first.c_str(), header.second.c_str());
+  }
+  const std::string revisionValue = std::to_string(revision);
+  http.addHeader("X-Media-Revision", revisionValue.c_str());
+  http.addHeader("X-Download-Id", downloadId.c_str());
+  const int httpCode = http.sendRequest("POST", nullptr, 0, nullptr);
+  http.end();
+  return httpCode == 200;
+}
+
+void CrossFrontSyncFilesActivity::drawFooter() {
+  if (state == State::DOWNLOADING) {
+    const auto labels = mappedInput.mapLabels(tr(STR_CANCEL), "", "", "");
+    GUI.drawButtonHints(renderer, labels.btn1, labels.btn2, labels.btn3, labels.btn4);
+    return;
+  }
+  const int selected = nav.selected;
+  const int itemIndex = itemIndexFromRow(selected);
+  const char* action = "";
+  if (isPreviousRow(selected) || isNextRow(selected)) {
+    action = tr(STR_OPEN);
+  } else if (itemIndex >= 0 && isDownloadable(items[itemIndex])) {
+    action = tr(STR_DOWNLOAD);
+  }
+  const auto labels = mappedInput.mapLabels(tr(STR_BACK), action, listCount() > 0 ? tr(STR_DIR_UP) : "",
+                                             listCount() > 0 ? tr(STR_DIR_DOWN) : "");
+  GUI.drawButtonHints(renderer, labels.btn1, labels.btn2, labels.btn3, labels.btn4);
+}
+
+void CrossFrontSyncFilesActivity::render(RenderLock&& lock) {
+  if (state == State::BROWSING || state == State::DOWNLOADING) {
+    UiListActivity::render(std::move(lock));
+    return;
+  }
+
   const auto& metrics = UITheme::getInstance().getMetrics();
   const auto pageWidth = renderer.getScreenWidth();
   const auto pageHeight = renderer.getScreenHeight();
-
+  const auto lineHeight = renderer.getLineHeight(UI_10_FONT_ID);
+  const auto centerY = (pageHeight - lineHeight) / 2;
   renderer.clearScreen();
-  GUI.drawHeader(renderer, Rect{0, metrics.topPadding, pageWidth, metrics.headerHeight}, tr(STR_CROSSFRONT_SYNC_FILES));
+  GUI.drawHeader(renderer, Rect{0, metrics.topPadding, pageWidth, metrics.headerHeight}, headerTitle());
 
-  const auto fontHeight = renderer.getLineHeight(UI_10_FONT_ID);
-  const auto centerY = (pageHeight - fontHeight) / 2;
-
-  switch (state) {
-    case State::CONNECTING_WIFI: {
-      renderer.drawCenteredText(UI_10_FONT_ID, centerY, tr(STR_CROSSFRONT_CONNECTING_WIFI));
-      const auto labels = mappedInput.mapLabels(tr(STR_BACK), "", "", "");
-      GUI.drawButtonHints(renderer, labels.btn1, labels.btn2, labels.btn3, labels.btn4);
-      break;
-    }
-
-    case State::FETCHING_LIST: {
-      renderer.drawCenteredText(UI_10_FONT_ID, centerY, tr(STR_CROSSFRONT_SYNCING_FILES));
-      break;
-    }
-
-    case State::DOWNLOADING: {
-      if (currentFileIndex < pendingFiles.size()) {
-        const auto& file = pendingFiles[currentFileIndex];
-        char titleBuf[128];
-        snprintf(titleBuf, sizeof(titleBuf), "[%u/%u] %s",
-                 static_cast<unsigned>(currentFileIndex + 1),
-                 static_cast<unsigned>(pendingFiles.size()),
-                 file.name.c_str());
-
-        const int topY = pageHeight / 3;
-        renderer.drawCenteredText(UI_10_FONT_ID, topY, titleBuf, true, EpdFontFamily::BOLD);
-
-        const int percent = crossfront::downloadProgressPercent(fileBytesDownloaded, fileBytesTotal);
-        int barY = topY + fontHeight + metrics.verticalSpacing * 2;
-        GUI.drawProgressBar(renderer,
-                            Rect{metrics.contentSidePadding, barY, pageWidth - metrics.contentSidePadding * 2,
-                                 metrics.progressBarHeight},
-                            percent, 100);
-
-        char sizeBuf[64];
-        char downStr[32];
-        char totStr[32];
-        formatSize(fileBytesDownloaded, downStr, sizeof(downStr));
-        formatSize(fileBytesTotal, totStr, sizeof(totStr));
-        snprintf(sizeBuf, sizeof(sizeBuf), "%s / %s (%d%%)", downStr, totStr, percent);
-
-        barY += metrics.progressBarHeight + metrics.verticalSpacing + fontHeight;
-        renderer.drawCenteredText(UI_10_FONT_ID, barY, sizeBuf);
-
-        const auto labels = mappedInput.mapLabels(tr(STR_CANCEL), "", "", "");
-        GUI.drawButtonHints(renderer, labels.btn1, labels.btn2, labels.btn3, labels.btn4);
-      }
-      break;
-    }
-
-    case State::NO_FILES: {
-      const bool hasNovelProgress = novelProgress != NovelProgress::NONE;
-      renderer.drawCenteredText(UI_10_FONT_ID, centerY - (hasNovelProgress ? fontHeight : 0),
-                                tr(STR_CROSSFRONT_NO_NEW_FILES), true, EpdFontFamily::BOLD);
-      if (novelProgress == NovelProgress::CRAWLING) {
-        char novelProgressText[96];
-        snprintf(novelProgressText, sizeof(novelProgressText), tr(STR_CROSSFRONT_NOVEL_CRAWLING),
-                 static_cast<unsigned>(novelCrawledChapters));
-        renderer.drawCenteredText(UI_10_FONT_ID, centerY + fontHeight, novelProgressText);
-      } else if (novelProgress == NovelProgress::PACKAGING) {
-        renderer.drawCenteredText(UI_10_FONT_ID, centerY + fontHeight, tr(STR_CROSSFRONT_NOVEL_PACKAGING));
-      }
-      const auto labels = mappedInput.mapLabels(tr(STR_BACK), "", "", "");
-      GUI.drawButtonHints(renderer, labels.btn1, labels.btn2, labels.btn3, labels.btn4);
-      break;
-    }
-
-    case State::COMPLETE: {
-      char doneBuf[64];
-      snprintf(doneBuf, sizeof(doneBuf), tr(STR_CROSSFRONT_FILES_SYNC_OK), static_cast<unsigned>(downloadedSuccessCount));
-      renderer.drawCenteredText(UI_10_FONT_ID, centerY, doneBuf, true, EpdFontFamily::BOLD);
-      const auto labels = mappedInput.mapLabels(tr(STR_BACK), "", "", "");
-      GUI.drawButtonHints(renderer, labels.btn1, labels.btn2, labels.btn3, labels.btn4);
-      break;
-    }
-
-    case State::ERROR_STATE: {
-      renderer.drawCenteredText(UI_10_FONT_ID, centerY - fontHeight, tr(STR_CROSSFRONT_ERR_SERVER), true, EpdFontFamily::BOLD);
-      if (!errorMessage.empty()) {
-        renderer.drawCenteredText(UI_10_FONT_ID, centerY + fontHeight, errorMessage.c_str());
-      }
-      const auto labels = mappedInput.mapLabels(tr(STR_BACK), "", "", "");
-      GUI.drawButtonHints(renderer, labels.btn1, labels.btn2, labels.btn3, labels.btn4);
-      break;
-    }
+  if (state == State::CONNECTING_WIFI) {
+    renderer.drawCenteredText(UI_10_FONT_ID, centerY, tr(STR_CROSSFRONT_CONNECTING_WIFI));
+  } else if (state == State::FETCHING_LIST) {
+    renderer.drawCenteredText(UI_10_FONT_ID, centerY, tr(STR_CROSSFRONT_SYNCING_FILES));
+  } else if (state == State::SYNCING_DOWNLOAD_STATUS) {
+    renderer.drawCenteredText(UI_10_FONT_ID, centerY, tr(STR_CROSSFRONT_EBOOK_SYNCING_STATUS));
+  } else if (state == State::ERROR_STATE) {
+    renderer.drawCenteredText(UI_10_FONT_ID, centerY - lineHeight, tr(STR_ERROR_MSG), true,
+                              EpdFontFamily::BOLD);
+    if (!errorMessage.empty()) renderer.drawCenteredText(UI_10_FONT_ID, centerY + lineHeight, errorMessage.c_str());
+    const auto labels = mappedInput.mapLabels(tr(STR_BACK), tr(STR_RETRY), "", "");
+    GUI.drawButtonHints(renderer, labels.btn1, labels.btn2, labels.btn3, labels.btn4);
   }
-
   renderer.displayBuffer();
 }

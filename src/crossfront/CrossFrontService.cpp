@@ -10,6 +10,7 @@
 #include <esp_sleep.h>
 
 #include <algorithm>
+#include <cstring>
 #include <ctime>
 #include <vector>
 
@@ -555,7 +556,6 @@ CrossFrontService::SyncResult CrossFrontService::syncNow(ProgressFn onProgress, 
     if (isDirty) {
       reqDoc["interval"] = intervalToString(CROSSFRONT_SETTINGS.updateInterval);
       reqDoc["sleepNetworkTimeoutMs"] = CROSSFRONT_SETTINGS.sleepNetworkTimeoutMs;
-      reqDoc["ebookDir"] = CROSSFRONT_SETTINGS.getEbookDir();
     }
     JsonArray reqWifi = reqDoc["wifiList"].to<JsonArray>();
     const size_t localCredCount = store.getCredentialCount();
@@ -804,8 +804,11 @@ CrossFrontService::SyncResult CrossFrontService::syncNow(ProgressFn onProgress, 
           }
 
           if (deviceConfig["ebookDir"].is<const char*>()) {
-            CROSSFRONT_SETTINGS.setEbookDir(deviceConfig["ebookDir"].as<const char*>());
-            CROSSFRONT_SETTINGS.saveToFile();
+            const char* configuredEbookDir = deviceConfig["ebookDir"].as<const char*>();
+            if (configuredEbookDir && std::strcmp(configuredEbookDir, CROSSFRONT_SETTINGS.getEbookDir()) != 0) {
+              CROSSFRONT_SETTINGS.setEbookDir(configuredEbookDir);
+              CROSSFRONT_SETTINGS.saveToFile();
+            }
           }
         }
       }

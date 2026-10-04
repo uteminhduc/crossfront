@@ -7,7 +7,7 @@
 
 namespace crossfront {
 
-inline bool isSafeAssignmentId(const std::string_view id) {
+inline bool isSafeMediaId(const std::string_view id) {
   if (id.empty() || id.size() > 64) return false;
   for (const unsigned char character : id) {
     if ((character >= 'a' && character <= 'z') || (character >= 'A' && character <= 'Z') ||
@@ -34,9 +34,21 @@ inline bool isSupportedFileType(const std::string_view type) {
   return type == "book" || type == "font";
 }
 
-inline bool isSafeFileAssignment(const std::string_view id, const std::string_view name,
-                                 const std::string_view type, const uint32_t revision) {
-  return isSafeAssignmentId(id) && isSafeFileName(name) && isSupportedFileType(type) && revision > 0;
+inline bool isSafeMediaFile(const std::string_view id, const std::string_view name,
+                            const std::string_view type, const uint32_t revision) {
+  return isSafeMediaId(id) && isSafeFileName(name) && isSupportedFileType(type) && revision > 0;
+}
+
+inline bool isSafeDownloadId(const std::string_view id) {
+  if (id.size() < 8 || id.size() > 96) return false;
+  for (const unsigned char character : id) {
+    if ((character >= 'a' && character <= 'z') || (character >= 'A' && character <= 'Z') ||
+        (character >= '0' && character <= '9') || character == '-' || character == '_') {
+      continue;
+    }
+    return false;
+  }
+  return true;
 }
 
 inline int downloadProgressPercent(const std::size_t downloaded, const std::size_t total) {
@@ -82,6 +94,10 @@ inline bool isSafeTargetFolder(const std::string_view folder) {
     if (character < 32 || character == 127 || character == '\\' || character == ':') return false;
   }
   return true;
+}
+
+inline bool isSafeEbookFolder(const std::string_view folder) {
+  return isSafeTargetFolder(folder) && folder.find('/', 1) == std::string_view::npos && folder.size() <= 63;
 }
 
 template <typename StorageType>

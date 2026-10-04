@@ -5,6 +5,8 @@
 #include <cstdio>
 #include <cstring>
 
+#include "crossfront/CrossFrontFileSafety.h"
+
 namespace {
 
 void copyToField(char* dest, const char* src, const size_t maxLen) {
@@ -104,7 +106,7 @@ void CrossFrontSettings::setEbookDir(const char* dir) {
   while (idx > 1 && buf[idx - 1] == '/') {
     buf[--idx] = '\0';
   }
-  if (strcmp(buf, "/") == 0) {
+  if (!crossfront::isSafeEbookFolder(buf)) {
     copyToField(ebookDir, DEFAULT_EBOOK_DIR, sizeof(ebookDir));
   } else {
     copyToField(ebookDir, buf, sizeof(ebookDir));

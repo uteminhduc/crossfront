@@ -20,7 +20,7 @@ above separately. CI runs firmware builds and host tests in distinct jobs on
 pull requests and pushes to `master` or `crossfront`.
 
 CrossFront host coverage (`CrossFrontSafetyTest`) checks hardware-ID formatting,
-token shape/termination, rejects unsafe file assignment IDs, names, and SD
+token shape/termination, rejects unsafe media IDs, names, and SD
 folders, and verifies backup/rollback on failed file replacement. ESP random/MAC
 and SD operations are stubbed; these tests cannot verify hardware entropy,
 HTTP/TLS, SD behavior, or display rendering.
@@ -36,6 +36,6 @@ card and verify manually:
     safe fallback rather than a broken or stale screen.
   - File sync with a valid book/font/sleep file writes only to its intended
     folder; cancellation, SD-full, interrupted transfer, and rename failure
-    leave no corrupt final file and do not acknowledge the assignment.
+    leave no corrupt final file and do not acknowledge the media item.
   - Check free heap, largest allocatable block, boot/wake logs, and flash target
     on X3/X4 before trusting the firmware on a daily-use device.

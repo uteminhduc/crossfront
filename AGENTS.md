@@ -5,7 +5,7 @@ Mission: Provide a lightweight, high-performance reading experience focused on E
 
 ## CrossFront contract
 
-The backend chooses a `cf_sleep_screens` record before returning `/sleep.bmp`; firmware stays screen-agnostic and keeps the existing BMP/ETag cache. `/config` carries the device `config` object and the `wifiList` DTO key. File sync endpoints return `cf_media_assignments` IDs, so `/done` posts that assignment ID and never marks a media record globally downloaded.
+The backend chooses a `cf_sleep_screens` record before returning `/sleep.bmp`; firmware stays screen-agnostic and keeps the existing BMP/ETag cache. `/config` carries the device `config` object and the `wifiList` DTO key. The paginated `/ebooks` endpoint returns `ebookDir` and every cloud ebook status. `ebookDir` is cloud-owned and firmware only applies it from backend responses. Firmware checks the real file name and size in that folder and reconciles the page through `/presence` without counting a download. Selecting any ready item, including one already present, asks for confirmation and uses the existing `HttpDownloader`; `/download` records the operation by download ID, then `/done` records the device revision after the file is saved.
 
 CrossFront Setup can open the configured Sleep screen as an awake preview. The preview reuses `SleepActivity`, blocks auto-sleep while active, refreshes the image using the effective CrossFront interval while awake, and returns to Setup on Back or Confirm; normal Sleep continues to enter deep sleep. Pairing QR, device ID, and token are privacy-mosaicked by default on the Setup screen.
 
