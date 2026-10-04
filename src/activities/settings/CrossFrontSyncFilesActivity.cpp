@@ -3,6 +3,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <memory>
+#include <new>
 #include <utility>
 
 #include <Arduino.h>
@@ -31,7 +32,10 @@
 namespace fui = freeink::ui;
 
 namespace {
-constexpr size_t MAX_PAGE_RESPONSE_BYTES = 48 * 1024;
+constexpr size_t MAX_PAGE_RESPONSE_BYTES = 32 * 1024;
+constexpr uint32_t MAX_PAGE_ITEMS = 6;
+constexpr uint32_t MIN_FETCH_FREE_HEAP =
+    MAX_PAGE_RESPONSE_BYTES + HttpDownloader::MIN_TLS_FREE_HEAP + 8 * 1024;
 constexpr uint32_t MAX_TOTAL_PAGES = 10000;
 constexpr uint16_t THUMBNAIL_WIDTH = 40;
 constexpr uint16_t THUMBNAIL_HEIGHT = 56;
@@ -150,6 +154,7 @@ void CrossFrontSyncFilesActivity::onEnter() {
 
 void CrossFrontSyncFilesActivity::onExit() {
   CrossFrontService::disconnectWifi();
+  pageResponseBuffer.reset();
   Activity::onExit();
 }
 
@@ -465,11 +470,33 @@ bool CrossFrontSyncFilesActivity::handleCustomInput() {
 }
 
 bool CrossFrontSyncFilesActivity::fetchPage(const uint32_t requestedPage) {
+  if (ESP.getFreeHeap() < MIN_FETCH_FREE_HEAP || ESP.getMaxAllocHeap() < MAX_PAGE_RESPONSE_BYTES) {
+    LOG_ERR("CF", "Low heap before ebook list fetch (%u free, %u max block)", ESP.getFreeHeap(),
+            ESP.getMaxAllocHeap());
+    return false;
+  }
+  if (!pageResponseBuffer) {
+    // Keep one bounded response allocation for this activity session. Reusing
+    // it across page fetches avoids std::string growth/reallocation in the
+    // SecureHttpClient receive callback, which previously terminated on OOM.
+    pageResponseBuffer.reset(new (std::nothrow) char[MAX_PAGE_RESPONSE_BYTES]);
+    if (!pageResponseBuffer) {
+      LOG_ERR("CF", "OOM allocating ebook list response buffer");
+      return false;
+    }
+  }
+  if (ESP.getFreeHeap() < HttpDownloader::MIN_TLS_FREE_HEAP ||
+      ESP.getMaxAllocHeap() < HttpDownloader::MIN_TLS_MAX_ALLOC) {
+    LOG_ERR("CF", "Low heap after ebook list buffer (%u free, %u max block)", ESP.getFreeHeap(),
+            ESP.getMaxAllocHeap());
+    pageResponseBuffer.reset();
+    return false;
+  }
   std::string server = CROSSFRONT_SETTINGS.getServerUrl();
   if (!server.empty() && server.back() == '/') server.pop_back();
   const std::string url = server + "/api/cf/device/" + deviceId + "/ebooks?page=" +
                           std::to_string(requestedPage) + "&perPage=" + std::to_string(perPage);
-  std::string jsonBody;
+  size_t responseLength = 0;
   bool responseTooLarge = false;
 
   freeink::SecureHttpClient http;
@@ -480,12 +507,13 @@ bool CrossFrontSyncFilesActivity::fetchPage(const uint32_t requestedPage) {
   for (const auto& header : makeHeaders(CROSSFRONT_SETTINGS.deviceToken)) {
     http.addHeader(header.first.c_str(), header.second.c_str());
   }
-  const int httpCode = http.sendRequest("GET", nullptr, 0, [&jsonBody, &responseTooLarge](const uint8_t* data, size_t len) {
-    if (len > MAX_PAGE_RESPONSE_BYTES || jsonBody.size() > MAX_PAGE_RESPONSE_BYTES - len) {
+  const int httpCode = http.sendRequest("GET", nullptr, 0, [this, &responseLength, &responseTooLarge](const uint8_t* data, size_t len) {
+    if (len > MAX_PAGE_RESPONSE_BYTES || responseLength > MAX_PAGE_RESPONSE_BYTES - len) {
       responseTooLarge = true;
       return false;
     }
-    jsonBody.append(reinterpret_cast<const char*>(data), len);
+    std::memcpy(pageResponseBuffer.get() + responseLength, data, len);
+    responseLength += len;
     return true;
   });
   const bool responseComplete = http.responseComplete();
@@ -496,11 +524,17 @@ bool CrossFrontSyncFilesActivity::fetchPage(const uint32_t requestedPage) {
                                                         : tr(STR_CROSSFRONT_ERR_SERVER);
     return false;
   }
-  if (responseTooLarge || !responseComplete || jsonBody.empty()) return false;
+  if (responseTooLarge || !responseComplete || responseLength == 0) {
+    if (responseTooLarge) LOG_ERR("CF", "Ebook list response exceeded %u bytes", static_cast<unsigned>(MAX_PAGE_RESPONSE_BYTES));
+    return false;
+  }
 
   JsonDocument doc;
-  const auto jsonError = deserializeJson(doc, &jsonBody[0], jsonBody.size());
-  if (jsonError != DeserializationError::Ok || !doc.is<JsonObject>()) return false;
+  const auto jsonError = deserializeJson(doc, pageResponseBuffer.get(), responseLength);
+  if (jsonError != DeserializationError::Ok || !doc.is<JsonObject>()) {
+    LOG_ERR("CF", "Invalid ebook list JSON (%s)", jsonError.c_str());
+    return false;
+  }
   const JsonObjectConst root = doc.as<JsonObjectConst>();
   const JsonVariantConst pageValue = root["page"];
   const JsonVariantConst perPageValue = root["perPage"];
@@ -525,7 +559,7 @@ bool CrossFrontSyncFilesActivity::fetchPage(const uint32_t requestedPage) {
   const uint32_t parsedPerPage = perPageValue.as<uint32_t>();
   const uint32_t parsedTotalPages = totalPagesValue.as<uint32_t>();
   const JsonArrayConst array = itemsValue.as<JsonArrayConst>();
-  if (parsedPage == 0 || parsedPerPage == 0 || parsedPerPage > 50 || parsedTotalPages > MAX_TOTAL_PAGES ||
+  if (parsedPage == 0 || parsedPerPage == 0 || parsedPerPage > MAX_PAGE_ITEMS || parsedTotalPages > MAX_TOTAL_PAGES ||
       array.size() > parsedPerPage) {
     return false;
   }

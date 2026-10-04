@@ -2,6 +2,7 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <memory>
 #include <string>
 #include <vector>
 
@@ -88,11 +89,12 @@ class CrossFrontSyncFilesActivity final : public UiListActivity {
 
   uint32_t page = 1;
   uint32_t pendingPage = 1;
-  uint32_t perPage = 12;
+  uint32_t perPage = 6;
   uint32_t totalPages = 0;
   int activeDownloadIndex = -1;
   size_t fileBytesDownloaded = 0;
   size_t fileBytesTotal = 0;
   bool cancelRequested = false;
   char deviceId[32] = {0};
+  std::unique_ptr<char[]> pageResponseBuffer;
 };
