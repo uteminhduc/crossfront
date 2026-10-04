@@ -219,7 +219,10 @@ const std::string& CrossFrontService::getLastSyncedWifi() {
   return lastSyncedWifiSsid;
 }
 
-bool CrossFrontService::connectWifiQuick(unsigned long timeoutMs, ProgressFn onProgress, void* userData) {
+bool CrossFrontService::connectWifiQuick(unsigned long timeoutMs, ProgressFn onProgress, void* userData,
+                                         CancelFn shouldCancel) {
+  const auto isCancelled = [shouldCancel, userData]() { return shouldCancel && shouldCancel(userData); };
+  if (isCancelled()) return false;
   if (WiFi.status() == WL_CONNECTED) {
     auto& store = WifiCredentialStore::getInstance();
     lastSyncedWifiSsid = store.getLastConnectedSsid();
@@ -258,6 +261,7 @@ bool CrossFrontService::connectWifiQuick(unsigned long timeoutMs, ProgressFn onP
   const unsigned long start = millis();
 
   for (size_t index = 0; index < candidates.size(); ++index) {
+    if (isCancelled()) return false;
     const unsigned long elapsed = millis() - start;
     if (elapsed >= timeoutMs) break;
 
@@ -282,11 +286,13 @@ bool CrossFrontService::connectWifiQuick(unsigned long timeoutMs, ProgressFn onP
 
     const unsigned long attemptStart = millis();
     while (WiFi.status() != WL_CONNECTED && millis() - attemptStart < attemptTimeout) {
+      if (isCancelled()) return false;
       delay(50);
       const wl_status_t status = WiFi.status();
       if (status == WL_NO_SSID_AVAIL || status == WL_CONNECT_FAILED) break;
     }
 
+    if (isCancelled()) return false;
     if (WiFi.status() == WL_CONNECTED) {
       store.setLastConnectedSsid(credential.ssid);
       lastSyncedWifiSsid = credential.ssid;

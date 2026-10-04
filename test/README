@@ -21,7 +21,8 @@ pull requests and pushes to `master` or `crossfront`.
 
 CrossFront host coverage (`CrossFrontSafetyTest`) checks hardware-ID formatting,
 token shape/termination, rejects unsafe media IDs, names, and SD
-folders, and verifies backup/rollback on failed file replacement. ESP random/MAC
+folders, verifies backup/rollback on failed file replacement, and locks the
+Ebook Cloud error-input priority and bounded-response arithmetic. ESP random/MAC
 and SD operations are stubbed; these tests cannot verify hardware entropy,
 HTTP/TLS, SD behavior, or display rendering.
 
@@ -37,5 +38,8 @@ card and verify manually:
   - File sync with a valid book/font/sleep file writes only to its intended
     folder; cancellation, SD-full, interrupted transfer, and rename failure
     leave no corrupt final file and do not acknowledge the media item.
+  - Ebook Cloud still loads with roughly 66 KB free heap, repeated Retry works,
+    and Back exits during Wi-Fi, list fetch, presence sync, EPUB download, and
+    `/done` acknowledgement without reusing a stale tap or button release.
   - Check free heap, largest allocatable block, boot/wake logs, and flash target
     on X3/X4 before trusting the firmware on a daily-use device.

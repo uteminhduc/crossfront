@@ -29,8 +29,10 @@ class CrossFrontService {
   };
 
   using ProgressFn = void (*)(SyncStep step, const char* detail, void* userData);
+  using CancelFn = bool (*)(void* userData);
 
-  static bool connectWifiQuick(unsigned long timeoutMs = 2500, ProgressFn onProgress = nullptr, void* userData = nullptr);
+  static bool connectWifiQuick(unsigned long timeoutMs = 2500, ProgressFn onProgress = nullptr,
+                               void* userData = nullptr, CancelFn shouldCancel = nullptr);
   static void disconnectWifi();
 
   static bool fetchSleepImage(unsigned long maxBudgetMs = DEFAULT_SLEEP_NETWORK_TIMEOUT_MS,

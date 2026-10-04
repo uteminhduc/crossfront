@@ -8,6 +8,7 @@
 
 #include "crossfront/CrossFrontCrypto.h"
 #include "crossfront/CrossFrontFileSafety.h"
+#include "crossfront/CrossFrontSyncControl.h"
 #include "crossfront/SleepImageRequest.h"
 
 extern "C" int esp_read_mac(uint8_t* mac, int) {
@@ -136,6 +137,31 @@ TEST(CrossFrontFileSafety, CalculatesLargeDownloadProgressWithoutIntegerOverflow
   EXPECT_EQ(crossfront::downloadProgressPercent(total, total), 100);
   EXPECT_EQ(crossfront::downloadProgressPercent(total + 1, total), 100);
   EXPECT_EQ(crossfront::downloadProgressPercent(1, 0), 0);
+}
+
+TEST(CrossFrontSyncControl, ErrorInputWaitsForAQuietFrameBeforeAcceptingActions) {
+  auto decision = crossfront::evaluateSyncErrorInput(false, false, false, true);
+  EXPECT_FALSE(decision.armed);
+  EXPECT_EQ(decision.action, crossfront::SyncErrorInputAction::NONE);
+
+  decision = crossfront::evaluateSyncErrorInput(decision.armed, true, false, false);
+  EXPECT_TRUE(decision.armed);
+  EXPECT_EQ(decision.action, crossfront::SyncErrorInputAction::NONE);
+
+  decision = crossfront::evaluateSyncErrorInput(decision.armed, false, false, true);
+  EXPECT_EQ(decision.action, crossfront::SyncErrorInputAction::RETRY);
+}
+
+TEST(CrossFrontSyncControl, BackAlwaysWinsOverRetryOnTheSameInputFrame) {
+  const auto decision = crossfront::evaluateSyncErrorInput(true, false, true, true);
+  EXPECT_EQ(decision.action, crossfront::SyncErrorInputAction::BACK);
+}
+
+TEST(CrossFrontSyncControl, BoundedResponseCheckDoesNotUnderflowAtTheLimit) {
+  constexpr size_t limit = 32U * 1024U;
+  EXPECT_TRUE(crossfront::canAppendBoundedResponse(limit - 1024, 1024, limit));
+  EXPECT_FALSE(crossfront::canAppendBoundedResponse(limit - 1023, 1024, limit));
+  EXPECT_FALSE(crossfront::canAppendBoundedResponse(0, limit + 1, limit));
 }
 
 TEST(CrossFrontFileSafety, RejectsFolderTraversalAndRootDestination) {

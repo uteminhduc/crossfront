@@ -37,10 +37,18 @@ constexpr int MAX_REDIRECTS = 5;
 struct Sink {
   std::function<bool(const uint8_t*, size_t)> write;  // returns false to abort the transfer
   HttpDownloader::ProgressCallback progress;
+  HttpDownloader::CancelCallback pollCancel;
   bool* cancelFlag = nullptr;
   size_t total = 0;
   size_t downloaded = 0;
 };
+
+bool sinkCancelled(Sink& sink) {
+  if (sink.cancelFlag && *sink.cancelFlag) return true;
+  if (!sink.pollCancel || !sink.pollCancel()) return false;
+  if (sink.cancelFlag) *sink.cancelFlag = true;
+  return true;
+}
 
 bool isRedirect(int status) {
   return status == 301 || status == 302 || status == 303 || status == 307 || status == 308;
@@ -109,7 +117,7 @@ HttpDownloader::DownloadError runGetWolf(const std::string& startUrl, const std:
           if (sink.progress && sink.total > 0) sink.progress(sink.downloaded, sink.total);
           return true;
         },
-        [&sink]() { return sink.cancelFlag && *sink.cancelFlag; });
+        [&sink]() { return sinkCancelled(sink); });
 
     if (http.aborted()) return HttpDownloader::ABORTED;
     if (status < 0) {
@@ -169,6 +177,7 @@ HttpDownloader::DownloadError runGet(const std::string& url, const std::string& 
                                      const std::vector<std::pair<std::string, std::string>>& extraHeaders = {},
                                      uint32_t* responsePollInterval = nullptr) {
   WifiPowerSaveGuard psGuard;
+  if (sinkCancelled(sink)) return HttpDownloader::ABORTED;
   esp_http_client_config_t config = {};
   config.url = url.c_str();
   config.buffer_size = HTTP_RX_BUF;
@@ -215,6 +224,10 @@ HttpDownloader::DownloadError runGet(const std::string& url, const std::string& 
     return HttpDownloader::HTTP_ERROR;
   }
   int64_t contentLength = esp_http_client_fetch_headers(client);
+  if (sinkCancelled(sink)) {
+    esp_http_client_cleanup(client);
+    return HttpDownloader::ABORTED;
+  }
   int status = esp_http_client_get_status_code(client);
   for (int hop = 0; isRedirect(status) && hop < MAX_REDIRECTS; ++hop) {
     if (esp_http_client_set_redirection(client) != ESP_OK) break;
@@ -265,7 +278,7 @@ HttpDownloader::DownloadError runGet(const std::string& url, const std::string& 
   }
 
   while (true) {
-    if (sink.cancelFlag && *sink.cancelFlag) {
+    if (sinkCancelled(sink)) {
       esp_http_client_cleanup(client);
       return HttpDownloader::ABORTED;
     }
@@ -351,7 +364,8 @@ HttpDownloader::DownloadError HttpDownloader::downloadToFile(const std::string& 
                                                              bool downgradeRedirectsToHttp, int timeoutMs,
                                                              const std::string& ifNoneMatch, std::string* responseEtag,
                                                              const std::vector<std::pair<std::string, std::string>>& extraHeaders,
-                                                             uint32_t* responsePollInterval) {
+                                                             uint32_t* responsePollInterval,
+                                                             CancelCallback pollCancel) {
   LOG_DBG("HTTP", "Downloading: %s -> %s", url.c_str(), destPath.c_str());
 
   const std::string tempPath = destPath + ".tmp";
@@ -381,6 +395,7 @@ HttpDownloader::DownloadError HttpDownloader::downloadToFile(const std::string& 
 
   Sink sink;
   sink.progress = std::move(progress);
+  sink.pollCancel = std::move(pollCancel);
   sink.cancelFlag = cancelFlag;
   sink.write = [&file](const uint8_t* data, size_t len) { return file.write(data, len) == len; };
 

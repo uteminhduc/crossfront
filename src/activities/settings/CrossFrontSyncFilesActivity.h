@@ -1,8 +1,8 @@
 #pragma once
 
+#include <array>
 #include <cstddef>
 #include <cstdint>
-#include <memory>
 #include <string>
 #include <vector>
 
@@ -42,12 +42,13 @@ class CrossFrontSyncFilesActivity final : public UiListActivity {
     std::string mediaId;
     std::string fileName;
     std::string sourceType;
-    std::vector<uint8_t> thumbnailBits;
+    std::array<uint8_t, 280> thumbnailBits{};
     size_t size = 0;
     uint32_t revision = 0;
     uint32_t crawled = 0;
     uint32_t total = 0;
     bool downloaded = false;
+    bool hasThumbnail = false;
   };
 
   int listCount() const override;
@@ -73,6 +74,11 @@ class CrossFrontSyncFilesActivity final : public UiListActivity {
   bool markFileDone(const std::string& mediaId, uint32_t revision, const std::string& downloadId);
   bool ensureTargetFolderExists(const std::string& folder) const;
   void clearPendingDownloadStatus();
+  void enterErrorState(const char* message, RetryAction action);
+  void leaveActiveOperation();
+  bool handleBackBeforeActiveOperation();
+  bool pollBackCancellation();
+  void retryFailedAction();
 
   State state = State::CONNECTING_WIFI;
   RetryAction retryAction = RetryAction::NONE;
@@ -95,6 +101,6 @@ class CrossFrontSyncFilesActivity final : public UiListActivity {
   size_t fileBytesDownloaded = 0;
   size_t fileBytesTotal = 0;
   bool cancelRequested = false;
+  bool errorInputArmed = false;
   char deviceId[32] = {0};
-  std::unique_ptr<char[]> pageResponseBuffer;
 };

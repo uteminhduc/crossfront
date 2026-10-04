@@ -17,6 +17,9 @@ class HttpDownloader {
   // Called with each body chunk as it arrives; return false to abort. Lets a
   // streaming parser consume the response without buffering the whole body.
   using DataCallback = std::function<bool(const uint8_t* data, size_t len)>;
+  // Polled during connect and body reads so synchronous callers can pump input
+  // and cancel before the first response chunk arrives.
+  using CancelCallback = std::function<bool()>;
 
   enum DownloadError {
     OK = 0,
@@ -61,5 +64,6 @@ class HttpDownloader {
                                       bool downgradeRedirectsToHttp = false, int timeoutMs = 60000,
                                       const std::string& ifNoneMatch = "", std::string* responseEtag = nullptr,
                                       const std::vector<std::pair<std::string, std::string>>& extraHeaders = {},
-                                      uint32_t* responsePollInterval = nullptr);
+                                      uint32_t* responsePollInterval = nullptr,
+                                      CancelCallback pollCancel = nullptr);
 };

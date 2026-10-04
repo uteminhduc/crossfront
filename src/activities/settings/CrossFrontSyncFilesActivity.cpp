@@ -3,7 +3,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <memory>
-#include <new>
+#include <string_view>
 #include <utility>
 
 #include <Arduino.h>
@@ -21,10 +21,12 @@
 
 #include "MappedInputManager.h"
 #include "activities/util/ConfirmationActivity.h"
+#include "components/HeaderBackTapTarget.h"
 #include "components/UITheme.h"
 #include "crossfront/CrossFrontFileSafety.h"
 #include "crossfront/CrossFrontService.h"
 #include "crossfront/CrossFrontSettings.h"
+#include "crossfront/CrossFrontSyncControl.h"
 #include "fontIds.h"
 #include "network/HttpDownloader.h"
 #include "util/BookCacheUtils.h"
@@ -34,12 +36,11 @@ namespace fui = freeink::ui;
 namespace {
 constexpr size_t MAX_PAGE_RESPONSE_BYTES = 32 * 1024;
 constexpr uint32_t MAX_PAGE_ITEMS = 6;
-constexpr uint32_t MIN_FETCH_FREE_HEAP =
-    MAX_PAGE_RESPONSE_BYTES + HttpDownloader::MIN_TLS_FREE_HEAP + 8 * 1024;
 constexpr uint32_t MAX_TOTAL_PAGES = 10000;
 constexpr uint16_t THUMBNAIL_WIDTH = 40;
 constexpr uint16_t THUMBNAIL_HEIGHT = 56;
 constexpr size_t MAX_THUMBNAIL_BMP_BYTES = 4096;
+constexpr const char* PAGE_RESPONSE_PATH = "/cf_ebooks_page.tmp";
 
 uint16_t readLittleEndian16(const uint8_t* data) {
   return static_cast<uint16_t>(data[0]) | (static_cast<uint16_t>(data[1]) << 8);
@@ -50,8 +51,9 @@ uint32_t readLittleEndian32(const uint8_t* data) {
          (static_cast<uint32_t>(data[2]) << 16) | (static_cast<uint32_t>(data[3]) << 24);
 }
 
-bool decodeThumbnailBmp(const char* encoded, std::vector<uint8_t>& output) {
-  output.clear();
+bool decodeThumbnailBmp(const char* encoded,
+                        std::array<uint8_t, THUMBNAIL_WIDTH * THUMBNAIL_HEIGHT / 8>& output) {
+  output.fill(0);
   if (!encoded || encoded[0] == '\0') return false;
   const size_t encodedLength = std::strlen(encoded);
   size_t decodedLength = 0;
@@ -61,8 +63,12 @@ bool decodeThumbnailBmp(const char* encoded, std::vector<uint8_t>& output) {
       decodedLength > MAX_THUMBNAIL_BMP_BYTES) {
     return false;
   }
-  std::vector<uint8_t> bmp(decodedLength);
-  result = mbedtls_base64_decode(bmp.data(), bmp.size(), &decodedLength,
+  auto bmp = makeUniqueNoThrow<uint8_t[]>(decodedLength);
+  if (!bmp) {
+    LOG_ERR("CF", "OOM decoding %u-byte ebook thumbnail", static_cast<unsigned>(decodedLength));
+    return false;
+  }
+  result = mbedtls_base64_decode(bmp.get(), decodedLength, &decodedLength,
                                  reinterpret_cast<const unsigned char*>(encoded), encodedLength);
   if (result != 0 || decodedLength < 62 || bmp[0] != 'B' || bmp[1] != 'M') return false;
   const uint32_t pixelOffset = readLittleEndian32(&bmp[10]);
@@ -79,9 +85,8 @@ bool decodeThumbnailBmp(const char* encoded, std::vector<uint8_t>& output) {
   if (sourceStride * height > decodedLength - pixelOffset) return false;
 
   const size_t destinationStride = (THUMBNAIL_WIDTH + 7) / 8;
-  output.assign(destinationStride * THUMBNAIL_HEIGHT, 0);
   for (uint16_t y = 0; y < THUMBNAIL_HEIGHT; ++y) {
-    const uint8_t* sourceRow = bmp.data() + pixelOffset + (THUMBNAIL_HEIGHT - 1 - y) * sourceStride;
+    const uint8_t* sourceRow = bmp.get() + pixelOffset + (THUMBNAIL_HEIGHT - 1 - y) * sourceStride;
     uint8_t* destinationRow = output.data() + y * destinationStride;
     for (uint16_t x = 0; x < THUMBNAIL_WIDTH; ++x) {
       const bool white = ((sourceRow[x / 8] >> (7 - x % 8)) & 0x01) != 0;
@@ -98,6 +103,11 @@ std::vector<std::pair<std::string, std::string>> makeHeaders(const char* token) 
   return headers;
 }
 
+// The streaming SecureHttpClient overload invokes its data callback whenever
+// the server sends a response body, including the small JSON ACKs from these
+// endpoints. Keep a real sink callback instead of passing an empty function.
+bool discardResponseBody(const uint8_t*, size_t) { return true; }
+
 std::string formatSize(const size_t bytes) {
   char out[32];
   if (bytes < 1024) {
@@ -110,7 +120,7 @@ std::string formatSize(const size_t bytes) {
   return out;
 }
 
-bool isKnownStatus(const std::string& status) {
+bool isKnownStatus(const std::string_view status) {
   return status == "pending" || status == "crawling" || status == "packaging" || status == "ready" ||
          status == "failed";
 }
@@ -145,6 +155,7 @@ void CrossFrontSyncFilesActivity::onEnter() {
   fileBytesDownloaded = 0;
   fileBytesTotal = 0;
   cancelRequested = false;
+  errorInputArmed = false;
 
   CROSSFRONT_SETTINGS.loadFromFile();
   CROSSFRONT_SETTINGS.getDeviceId(deviceId, sizeof(deviceId));
@@ -154,7 +165,7 @@ void CrossFrontSyncFilesActivity::onEnter() {
 
 void CrossFrontSyncFilesActivity::onExit() {
   CrossFrontService::disconnectWifi();
-  pageResponseBuffer.reset();
+  if (Storage.exists(PAGE_RESPONSE_PATH)) Storage.remove(PAGE_RESPONSE_PATH);
   Activity::onExit();
 }
 
@@ -249,7 +260,7 @@ void CrossFrontSyncFilesActivity::rebuildRows() {
         rowValues[row] = ebook.downloaded ? tr(STR_CROSSFRONT_EBOOK_DOWNLOADED) : tr(STR_DOWNLOAD);
         listItem.value = rowValues[row].c_str();
       }
-      if (!ebook.thumbnailBits.empty()) {
+      if (ebook.hasThumbnail) {
         listItem.icon = fui::BitmapRef{ebook.thumbnailBits.data(), THUMBNAIL_WIDTH, THUMBNAIL_HEIGHT,
                                       fui::BitmapFormat::BW1, false};
       }
@@ -360,14 +371,13 @@ void CrossFrontSyncFilesActivity::onDownloadConfirmation(const int itemIndex, co
     rowsDirty = true;
   }
   if (cancelRequested) {
-    retryAction = RetryAction::NONE;
     clearPendingDownloadStatus();
+    activeDownloadIndex = -1;
+    cancelRequested = false;
     state = State::BROWSING;
   } else if (!downloaded) {
     clearPendingDownloadStatus();
-    errorMessage = tr(STR_CROSSFRONT_EBOOK_DOWNLOAD_FAILED);
-    retryAction = RetryAction::FETCH_LIST;
-    state = State::ERROR_STATE;
+    enterErrorState(tr(STR_CROSSFRONT_EBOOK_DOWNLOAD_FAILED), RetryAction::FETCH_LIST);
   } else {
     retryAction = RetryAction::SYNC_DOWNLOAD_STATUS;
     state = State::SYNCING_DOWNLOAD_STATUS;
@@ -381,14 +391,79 @@ void CrossFrontSyncFilesActivity::clearPendingDownloadStatus() {
   pendingMediaRevision = 0;
 }
 
+void CrossFrontSyncFilesActivity::enterErrorState(const char* message, const RetryAction action) {
+  errorMessage = message ? message : "";
+  retryAction = action;
+  if (action != RetryAction::SYNC_DOWNLOAD_STATUS) activeDownloadIndex = -1;
+  cancelRequested = false;
+  errorInputArmed = false;
+  state = State::ERROR_STATE;
+}
+
+void CrossFrontSyncFilesActivity::leaveActiveOperation() {
+  retryAction = RetryAction::NONE;
+  errorMessage.clear();
+  clearPendingDownloadStatus();
+  activeDownloadIndex = -1;
+  cancelRequested = false;
+  errorInputArmed = false;
+  if (items.empty()) {
+    finish();
+    return;
+  }
+  state = State::BROWSING;
+  rowsDirty = true;
+  requestUpdate(true);
+}
+
+bool CrossFrontSyncFilesActivity::handleBackBeforeActiveOperation() {
+  if (!mappedInput.wasReleased(MappedInputManager::Button::Back)) return false;
+  cancelRequested = true;
+  leaveActiveOperation();
+  return true;
+}
+
+bool CrossFrontSyncFilesActivity::pollBackCancellation() {
+  if (cancelRequested) return true;
+  mappedInput.update(true);
+  if (mappedInput.wasReleased(MappedInputManager::Button::Back)) cancelRequested = true;
+  return cancelRequested;
+}
+
+void CrossFrontSyncFilesActivity::retryFailedAction() {
+  errorMessage.clear();
+  cancelRequested = false;
+  errorInputArmed = false;
+  switch (retryAction) {
+    case RetryAction::CONNECT_WIFI:
+      state = State::CONNECTING_WIFI;
+      break;
+    case RetryAction::SYNC_DOWNLOAD_STATUS:
+      state = !pendingMediaId.empty() && !pendingDownloadId.empty() ? State::SYNCING_DOWNLOAD_STATUS
+                                                                    : State::FETCHING_LIST;
+      break;
+    case RetryAction::FETCH_LIST:
+    case RetryAction::NONE:
+      state = State::FETCHING_LIST;
+      break;
+  }
+  requestUpdate(true);
+}
+
 bool CrossFrontSyncFilesActivity::handleCustomInput() {
   if (state == State::BROWSING) return false;
 
   if (state == State::CONNECTING_WIFI) {
-    if (!CrossFrontService::connectWifiQuick(15000)) {
-      errorMessage = tr(STR_CROSSFRONT_ERR_WIFI);
-      retryAction = RetryAction::CONNECT_WIFI;
-      state = State::ERROR_STATE;
+    if (handleBackBeforeActiveOperation()) return true;
+    cancelRequested = false;
+    const bool connected = CrossFrontService::connectWifiQuick(
+        15000, nullptr, this,
+        [](void* userData) { return static_cast<CrossFrontSyncFilesActivity*>(userData)->pollBackCancellation(); });
+    if (cancelRequested) {
+      leaveActiveOperation();
+      return true;
+    } else if (!connected) {
+      enterErrorState(tr(STR_CROSSFRONT_ERR_WIFI), RetryAction::CONNECT_WIFI);
     } else {
       retryAction = RetryAction::NONE;
       errorMessage.clear();
@@ -399,10 +474,15 @@ bool CrossFrontSyncFilesActivity::handleCustomInput() {
   }
 
   if (state == State::FETCHING_LIST) {
-    if (!fetchPage(pendingPage)) {
-      if (errorMessage.empty()) errorMessage = tr(STR_CROSSFRONT_ERR_SERVER);
-      retryAction = RetryAction::FETCH_LIST;
-      state = State::ERROR_STATE;
+    if (handleBackBeforeActiveOperation()) return true;
+    cancelRequested = false;
+    const bool fetched = fetchPage(pendingPage);
+    if (cancelRequested) {
+      leaveActiveOperation();
+      return true;
+    } else if (!fetched) {
+      const std::string message = errorMessage.empty() ? tr(STR_CROSSFRONT_ERR_SERVER) : errorMessage;
+      enterErrorState(message.c_str(), RetryAction::FETCH_LIST);
     } else {
       retryAction = RetryAction::NONE;
       errorMessage.clear();
@@ -415,9 +495,14 @@ bool CrossFrontSyncFilesActivity::handleCustomInput() {
   }
 
   if (state == State::SYNCING_DOWNLOAD_STATUS) {
+    if (handleBackBeforeActiveOperation()) return true;
+    cancelRequested = false;
     const bool acknowledged = !pendingMediaId.empty() && !pendingDownloadId.empty() &&
                               markFileDone(pendingMediaId, pendingMediaRevision, pendingDownloadId);
-    if (acknowledged) {
+    if (cancelRequested) {
+      leaveActiveOperation();
+      return true;
+    } else if (acknowledged) {
       retryAction = RetryAction::NONE;
       errorMessage.clear();
       if (activeDownloadIndex >= 0 && activeDownloadIndex < static_cast<int>(items.size())) {
@@ -425,15 +510,14 @@ bool CrossFrontSyncFilesActivity::handleCustomInput() {
         rowsDirty = true;
       }
       clearPendingDownloadStatus();
+      activeDownloadIndex = -1;
       state = State::BROWSING;
     } else {
       if (activeDownloadIndex >= 0 && activeDownloadIndex < static_cast<int>(items.size())) {
-        items[activeDownloadIndex].downloaded = false;
+        items[activeDownloadIndex].downloaded = isFilePresent(items[activeDownloadIndex]);
         rowsDirty = true;
       }
-      errorMessage = tr(STR_CROSSFRONT_EBOOK_STATUS_SYNC_FAILED);
-      retryAction = RetryAction::SYNC_DOWNLOAD_STATUS;
-      state = State::ERROR_STATE;
+      enterErrorState(tr(STR_CROSSFRONT_EBOOK_STATUS_SYNC_FAILED), RetryAction::SYNC_DOWNLOAD_STATUS);
     }
     requestUpdate(true);
     return true;
@@ -441,28 +525,25 @@ bool CrossFrontSyncFilesActivity::handleCustomInput() {
 
   if (state == State::DOWNLOADING) return true;
 
-  int x = 0;
-  int y = 0;
-  const bool tapped = mappedInput.wasScreenTapped(x, y);
   if (state == State::ERROR_STATE) {
-    if (mappedInput.wasReleased(MappedInputManager::Button::Confirm) || tapped) {
-      errorMessage.clear();
-      if (retryAction == RetryAction::CONNECT_WIFI) {
-        state = State::CONNECTING_WIFI;
-      } else if (retryAction == RetryAction::SYNC_DOWNLOAD_STATUS && !pendingMediaId.empty() &&
-                 !pendingDownloadId.empty()) {
-        state = State::SYNCING_DOWNLOAD_STATUS;
-      } else {
-        state = State::FETCHING_LIST;
-      }
-      requestUpdate(true);
-    } else if (mappedInput.wasReleased(MappedInputManager::Button::Back)) {
-      if (items.empty()) {
-        finish();
-      } else {
-        state = State::BROWSING;
-        requestUpdate();
-      }
+    int tapX = 0;
+    int tapY = 0;
+    const bool tapped = mappedInput.wasScreenTapped(tapX, tapY);
+    const bool headerBackTapped = tapped && HeaderBackTapTarget::contains(tapX, tapY);
+    const bool backRequested = headerBackTapped || mappedInput.wasReleased(MappedInputManager::Button::Back);
+    const bool retryRequested = mappedInput.wasReleased(MappedInputManager::Button::Confirm) ||
+                                (tapped && !headerBackTapped);
+    const bool inputIdle = !backRequested && !retryRequested && !mappedInput.wasAnyPressed() &&
+                           !mappedInput.wasAnyReleased() && !mappedInput.wasScreenTouchReleased() &&
+                           !mappedInput.isPressed(MappedInputManager::Button::Back) &&
+                           !mappedInput.isPressed(MappedInputManager::Button::Confirm);
+    const auto decision =
+        crossfront::evaluateSyncErrorInput(errorInputArmed, inputIdle, backRequested, retryRequested);
+    errorInputArmed = decision.armed;
+    if (decision.action == crossfront::SyncErrorInputAction::BACK) {
+      leaveActiveOperation();
+    } else if (decision.action == crossfront::SyncErrorInputAction::RETRY) {
+      retryFailedAction();
     }
     return true;
   }
@@ -470,140 +551,241 @@ bool CrossFrontSyncFilesActivity::handleCustomInput() {
 }
 
 bool CrossFrontSyncFilesActivity::fetchPage(const uint32_t requestedPage) {
-  if (ESP.getFreeHeap() < MIN_FETCH_FREE_HEAP || ESP.getMaxAllocHeap() < MAX_PAGE_RESPONSE_BYTES) {
+  if (ESP.getFreeHeap() < HttpDownloader::MIN_TLS_FREE_HEAP ||
+      ESP.getMaxAllocHeap() < HttpDownloader::MIN_TLS_MAX_ALLOC) {
     LOG_ERR("CF", "Low heap before ebook list fetch (%u free, %u max block)", ESP.getFreeHeap(),
             ESP.getMaxAllocHeap());
     return false;
   }
-  if (!pageResponseBuffer) {
-    // Keep one bounded response allocation for this activity session. Reusing
-    // it across page fetches avoids std::string growth/reallocation in the
-    // SecureHttpClient receive callback, which previously terminated on OOM.
-    pageResponseBuffer.reset(new (std::nothrow) char[MAX_PAGE_RESPONSE_BYTES]);
-    if (!pageResponseBuffer) {
-      LOG_ERR("CF", "OOM allocating ebook list response buffer");
-      return false;
-    }
-  }
-  if (ESP.getFreeHeap() < HttpDownloader::MIN_TLS_FREE_HEAP ||
-      ESP.getMaxAllocHeap() < HttpDownloader::MIN_TLS_MAX_ALLOC) {
-    LOG_ERR("CF", "Low heap after ebook list buffer (%u free, %u max block)", ESP.getFreeHeap(),
-            ESP.getMaxAllocHeap());
-    pageResponseBuffer.reset();
+
+  if (Storage.exists(PAGE_RESPONSE_PATH) && !Storage.remove(PAGE_RESPONSE_PATH)) {
+    LOG_ERR("CF", "Failed to remove stale ebook list response");
     return false;
   }
+  HalFile responseFile;
+  if (!Storage.openFileForWrite("CF", PAGE_RESPONSE_PATH, responseFile)) {
+    LOG_ERR("CF", "Failed to open ebook list response file");
+    return false;
+  }
+
   std::string server = CROSSFRONT_SETTINGS.getServerUrl();
   if (!server.empty() && server.back() == '/') server.pop_back();
   const std::string url = server + "/api/cf/device/" + deviceId + "/ebooks?page=" +
                           std::to_string(requestedPage) + "&perPage=" + std::to_string(perPage);
+  if (pollBackCancellation()) {
+    responseFile.close();
+    Storage.remove(PAGE_RESPONSE_PATH);
+    return false;
+  }
+  if (ESP.getFreeHeap() < HttpDownloader::MIN_TLS_FREE_HEAP ||
+      ESP.getMaxAllocHeap() < HttpDownloader::MIN_TLS_MAX_ALLOC) {
+    LOG_ERR("CF", "Low heap after opening ebook list response (%u free, %u max block)", ESP.getFreeHeap(),
+            ESP.getMaxAllocHeap());
+    responseFile.close();
+    Storage.remove(PAGE_RESPONSE_PATH);
+    return false;
+  }
   size_t responseLength = 0;
   bool responseTooLarge = false;
+  bool responseWriteFailed = false;
+  bool responseComplete = false;
+  bool requestAborted = false;
+  int httpCode = -1;
 
-  freeink::SecureHttpClient http;
-  http.setTimeout(15000);
-  http.setInsecure();
-  if (!http.begin(url)) return false;
-  http.setUserAgent("CrossPoint-ESP32");
-  for (const auto& header : makeHeaders(CROSSFRONT_SETTINGS.deviceToken)) {
-    http.addHeader(header.first.c_str(), header.second.c_str());
-  }
-  const int httpCode = http.sendRequest("GET", nullptr, 0, [this, &responseLength, &responseTooLarge](const uint8_t* data, size_t len) {
-    if (len > MAX_PAGE_RESPONSE_BYTES || responseLength > MAX_PAGE_RESPONSE_BYTES - len) {
-      responseTooLarge = true;
-      return false;
+  {
+    freeink::SecureHttpClient http;
+    http.setTimeout(15000);
+    http.setInsecure();
+    if (http.begin(url)) {
+      http.setUserAgent("CrossPoint-ESP32");
+      for (const auto& header : makeHeaders(CROSSFRONT_SETTINGS.deviceToken)) {
+        http.addHeader(header.first.c_str(), header.second.c_str());
+      }
+      httpCode = http.sendRequest(
+          "GET", nullptr, 0,
+          [&responseFile, &responseLength, &responseTooLarge,
+           &responseWriteFailed](const uint8_t* data, const size_t len) {
+            if (!crossfront::canAppendBoundedResponse(responseLength, len, MAX_PAGE_RESPONSE_BYTES)) {
+              responseTooLarge = true;
+              return false;
+            }
+            if (responseFile.write(data, len) != len) {
+              responseWriteFailed = true;
+              return false;
+            }
+            responseLength += len;
+            return true;
+          },
+          [this]() { return pollBackCancellation(); });
+      responseComplete = http.responseComplete();
+      requestAborted = http.aborted();
     }
-    std::memcpy(pageResponseBuffer.get() + responseLength, data, len);
-    responseLength += len;
-    return true;
-  });
-  const bool responseComplete = http.responseComplete();
-  http.end();
+    http.end();
+  }
+
+  const bool responseClosed = responseFile.close();
+  if (!responseClosed) LOG_ERR("CF", "Failed to close ebook list response file");
+
+  const auto discardResponse = []() {
+    if (Storage.exists(PAGE_RESPONSE_PATH) && !Storage.remove(PAGE_RESPONSE_PATH)) {
+      LOG_ERR("CF", "Failed to remove ebook list response file");
+    }
+  };
+
+  if (cancelRequested || requestAborted) {
+    discardResponse();
+    return false;
+  }
 
   if (httpCode != 200) {
+    discardResponse();
     errorMessage = (httpCode == 401 || httpCode == 404) ? tr(STR_CROSSFRONT_ERR_NOT_PAIRED)
                                                         : tr(STR_CROSSFRONT_ERR_SERVER);
     return false;
   }
-  if (responseTooLarge || !responseComplete || responseLength == 0) {
-    if (responseTooLarge) LOG_ERR("CF", "Ebook list response exceeded %u bytes", static_cast<unsigned>(MAX_PAGE_RESPONSE_BYTES));
+  if (!responseClosed || responseTooLarge || responseWriteFailed || !responseComplete || responseLength == 0) {
+    if (responseTooLarge) {
+      LOG_ERR("CF", "Ebook list response exceeded %u bytes", static_cast<unsigned>(MAX_PAGE_RESPONSE_BYTES));
+    }
+    if (responseWriteFailed) LOG_ERR("CF", "Failed to write ebook list response");
+    discardResponse();
     return false;
   }
 
-  JsonDocument doc;
-  const auto jsonError = deserializeJson(doc, pageResponseBuffer.get(), responseLength);
-  if (jsonError != DeserializationError::Ok || !doc.is<JsonObject>()) {
-    LOG_ERR("CF", "Invalid ebook list JSON (%s)", jsonError.c_str());
+  HalFile responseInput;
+  if (!Storage.openFileForRead("CF", PAGE_RESPONSE_PATH, responseInput)) {
+    LOG_ERR("CF", "Failed to reopen ebook list response");
+    discardResponse();
     return false;
   }
-  const JsonObjectConst root = doc.as<JsonObjectConst>();
-  const JsonVariantConst pageValue = root["page"];
-  const JsonVariantConst perPageValue = root["perPage"];
-  const JsonVariantConst totalItemsValue = root["totalItems"];
-  const JsonVariantConst totalPagesValue = root["totalPages"];
-  const JsonVariantConst ebookDirValue = root["ebookDir"];
-  const JsonVariantConst itemsValue = root["items"];
-  if (!pageValue.is<uint32_t>() || !perPageValue.is<uint32_t>() || !totalItemsValue.is<uint32_t>() ||
-      !totalPagesValue.is<uint32_t>() || !ebookDirValue.is<const char*>() || !itemsValue.is<JsonArrayConst>()) {
+  if (responseInput.size() != responseLength) {
+    LOG_ERR("CF", "Ebook list response size changed on SD");
+    responseInput.close();
+    discardResponse();
     return false;
   }
 
-  const std::string ebookDir = ebookDirValue.as<const char*>();
-  if (!crossfront::isSafeEbookFolder(ebookDir)) return false;
+  std::string ebookDir;
+  uint32_t parsedPage = 0;
+  uint32_t parsedPerPage = 0;
+  uint32_t parsedTotalPages = 0;
+  std::vector<EbookItem> parsedItems;
+  {
+    JsonDocument doc;
+    DeserializationError jsonError;
+    JsonDocument filter;
+    filter["page"] = true;
+    filter["perPage"] = true;
+    filter["totalItems"] = true;
+    filter["totalPages"] = true;
+    filter["ebookDir"] = true;
+    filter["items"][0]["id"] = true;
+    filter["items"][0]["title"] = true;
+    filter["items"][0]["status"] = true;
+    filter["items"][0]["mediaId"] = true;
+    filter["items"][0]["fileName"] = true;
+    filter["items"][0]["sourceType"] = true;
+    filter["items"][0]["size"] = true;
+    filter["items"][0]["revision"] = true;
+    filter["items"][0]["crawled"] = true;
+    filter["items"][0]["total"] = true;
+    filter["items"][0]["downloaded"] = true;
+    filter["items"][0]["thumbnailBmp"] = true;
+    jsonError = deserializeJson(doc, responseInput, DeserializationOption::Filter(filter));
+    responseInput.close();
+    discardResponse();
+    if (jsonError != DeserializationError::Ok || !doc.is<JsonObject>()) {
+      LOG_ERR("CF", "Invalid ebook list JSON (%s)", jsonError.c_str());
+      return false;
+    }
+    const JsonObjectConst root = doc.as<JsonObjectConst>();
+    const JsonVariantConst pageValue = root["page"];
+    const JsonVariantConst perPageValue = root["perPage"];
+    const JsonVariantConst totalItemsValue = root["totalItems"];
+    const JsonVariantConst totalPagesValue = root["totalPages"];
+    const JsonVariantConst ebookDirValue = root["ebookDir"];
+    const JsonVariantConst itemsValue = root["items"];
+    if (!pageValue.is<uint32_t>() || !perPageValue.is<uint32_t>() || !totalItemsValue.is<uint32_t>() ||
+        !totalPagesValue.is<uint32_t>() || !ebookDirValue.is<const char*>() || !itemsValue.is<JsonArrayConst>()) {
+      return false;
+    }
+
+    const char* ebookDirText = ebookDirValue.as<const char*>();
+    const std::string_view ebookDirView(ebookDirText);
+    parsedPage = pageValue.as<uint32_t>();
+    parsedPerPage = perPageValue.as<uint32_t>();
+    parsedTotalPages = totalPagesValue.as<uint32_t>();
+    const JsonArrayConst array = itemsValue.as<JsonArrayConst>();
+    if (!crossfront::isSafeEbookFolder(ebookDirView) || parsedPage == 0 || parsedPerPage == 0 ||
+        parsedPerPage > MAX_PAGE_ITEMS || parsedTotalPages > MAX_TOTAL_PAGES || array.size() > parsedPerPage) {
+      return false;
+    }
+    ebookDir.assign(ebookDirView.data(), ebookDirView.size());
+
+    parsedItems.reserve(array.size());
+    for (const JsonVariantConst value : array) {
+      if (!value.is<JsonObjectConst>()) return false;
+      const JsonObjectConst object = value.as<JsonObjectConst>();
+      if (!object["id"].is<const char*>() || !object["title"].is<const char*>() ||
+          !object["status"].is<const char*>() || !object["crawled"].is<uint32_t>() ||
+          !object["total"].is<uint32_t>() || !object["downloaded"].is<bool>()) {
+        return false;
+      }
+
+      const char* idText = object["id"].as<const char*>();
+      const char* titleText = object["title"].as<const char*>();
+      const char* statusText = object["status"].as<const char*>();
+      const char* mediaIdText = object["mediaId"] | "";
+      const char* fileNameText = object["fileName"] | "";
+      const char* sourceTypeText = object["sourceType"] | "upload";
+      const std::string_view id(idText);
+      const std::string_view title(titleText);
+      const std::string_view status(statusText);
+      const std::string_view mediaId(mediaIdText);
+      const std::string_view fileName(fileNameText);
+      const std::string_view sourceType(sourceTypeText);
+      if (!crossfront::isSafeMediaId(id) || title.empty() || title.size() > 1024 || !isKnownStatus(status) ||
+          (!mediaId.empty() && !crossfront::isSafeMediaId(mediaId)) ||
+          (!fileName.empty() && !crossfront::isSafeFileName(fileName)) ||
+          (sourceType != "upload" && sourceType != "generated")) {
+        return false;
+      }
+
+      EbookItem item;
+      item.title.assign(title.data(), title.size());
+      item.status.assign(status.data(), status.size());
+      item.mediaId.assign(mediaId.data(), mediaId.size());
+      item.fileName.assign(fileName.data(), fileName.size());
+      item.sourceType.assign(sourceType.data(), sourceType.size());
+      item.size = object["size"] | 0U;
+      item.revision = object["revision"] | 0U;
+      item.crawled = object["crawled"].as<uint32_t>();
+      item.total = object["total"].as<uint32_t>();
+      item.downloaded = object["downloaded"].as<bool>();
+      item.hasThumbnail = decodeThumbnailBmp(object["thumbnailBmp"] | "", item.thumbnailBits);
+      if (item.status == "ready" && !isDownloadable(item)) {
+        item.mediaId.clear();
+        item.fileName.clear();
+        item.size = 0;
+        item.revision = 0;
+        item.downloaded = false;
+      }
+      parsedItems.push_back(std::move(item));
+    }
+  }
+
+  if (pollBackCancellation()) return false;
   if (ebookDir != CROSSFRONT_SETTINGS.getEbookDir()) {
     CROSSFRONT_SETTINGS.setEbookDir(ebookDir.c_str());
     if (ebookDir != CROSSFRONT_SETTINGS.getEbookDir() || !CROSSFRONT_SETTINGS.saveToFile()) return false;
   }
   if (!ensureTargetFolderExists(ebookDir)) return false;
-
-  const uint32_t parsedPage = pageValue.as<uint32_t>();
-  const uint32_t parsedPerPage = perPageValue.as<uint32_t>();
-  const uint32_t parsedTotalPages = totalPagesValue.as<uint32_t>();
-  const JsonArrayConst array = itemsValue.as<JsonArrayConst>();
-  if (parsedPage == 0 || parsedPerPage == 0 || parsedPerPage > MAX_PAGE_ITEMS || parsedTotalPages > MAX_TOTAL_PAGES ||
-      array.size() > parsedPerPage) {
-    return false;
-  }
-
-  std::vector<EbookItem> parsedItems;
-  parsedItems.reserve(array.size());
-  for (const JsonVariantConst value : array) {
-    if (!value.is<JsonObjectConst>()) return false;
-    const JsonObjectConst object = value.as<JsonObjectConst>();
-    if (!object["id"].is<const char*>() || !object["title"].is<const char*>() ||
-        !object["status"].is<const char*>() || !object["crawled"].is<uint32_t>() ||
-        !object["total"].is<uint32_t>() || !object["downloaded"].is<bool>()) {
-      return false;
-    }
-
-    EbookItem item;
-    item.title = object["title"].as<const char*>();
-    item.status = object["status"].as<const char*>();
-    item.mediaId = object["mediaId"] | "";
-    item.fileName = object["fileName"] | "";
-    item.sourceType = object["sourceType"] | "upload";
-    item.size = object["size"] | 0U;
-    item.revision = object["revision"] | 0U;
-    item.crawled = object["crawled"].as<uint32_t>();
-    item.total = object["total"].as<uint32_t>();
-    item.downloaded = object["downloaded"].as<bool>();
-    decodeThumbnailBmp(object["thumbnailBmp"] | "", item.thumbnailBits);
-    if (!crossfront::isSafeMediaId(object["id"].as<const char*>()) || item.title.empty() || item.title.size() > 1024 ||
-        !isKnownStatus(item.status)) {
-      return false;
-    }
-    if (item.status == "ready" && !isDownloadable(item)) {
-      item.mediaId.clear();
-      item.fileName.clear();
-      item.size = 0;
-      item.revision = 0;
-      item.downloaded = false;
-    } else if (item.status == "ready") {
-      item.downloaded = isFilePresent(item);
-    }
-    parsedItems.push_back(std::move(item));
+  for (auto& item : parsedItems) {
+    if (item.status == "ready" && isDownloadable(item)) item.downloaded = isFilePresent(item);
   }
 
   if (!syncLocalPresence(parsedItems)) {
+    if (cancelRequested) return false;
     LOG_ERR("CF", "Failed to reconcile local ebook presence");
   }
 
@@ -649,6 +831,12 @@ bool CrossFrontSyncFilesActivity::downloadSingleFile(const EbookItem& item, cons
   unsigned long lastProgressUpdateMs = millis();
   const size_t expectedSize = item.size;
   bool responseTooLarge = false;
+  if (ESP.getFreeHeap() < HttpDownloader::MIN_TLS_FREE_HEAP ||
+      ESP.getMaxAllocHeap() < HttpDownloader::MIN_TLS_MAX_ALLOC) {
+    LOG_ERR("CF", "Low heap after preparing ebook download (%u free, %u max block)", ESP.getFreeHeap(),
+            ESP.getMaxAllocHeap());
+    return false;
+  }
   const auto result = HttpDownloader::downloadToFile(
       url, temporary,
       [this, &lastRenderedPercent, &lastProgressUpdateMs, expectedSize,
@@ -659,8 +847,6 @@ bool CrossFrontSyncFilesActivity::downloadSingleFile(const EbookItem& item, cons
           return;
         }
         fileBytesDownloaded = downloaded;
-        mappedInput.update(true);
-        if (mappedInput.wasReleased(MappedInputManager::Button::Back)) cancelRequested = true;
         const int percent = crossfront::downloadProgressPercent(fileBytesDownloaded, fileBytesTotal);
         const unsigned long now = millis();
         if (percent >= 100 || lastRenderedPercent < 0 || percent >= lastRenderedPercent + 5 ||
@@ -670,7 +856,8 @@ bool CrossFrontSyncFilesActivity::downloadSingleFile(const EbookItem& item, cons
           requestUpdate(true);
         }
       },
-      &cancelRequested, "", "", false, 120000, "", nullptr, headers);
+      &cancelRequested, "", "", false, 120000, "", nullptr, headers, nullptr,
+      [this]() { return pollBackCancellation(); });
 
   if (responseTooLarge) cancelRequested = false;
   if (cancelRequested || result != HttpDownloader::OK) {
@@ -714,6 +901,12 @@ bool CrossFrontSyncFilesActivity::syncLocalPresence(const std::vector<EbookItem>
   std::string server = CROSSFRONT_SETTINGS.getServerUrl();
   if (!server.empty() && server.back() == '/') server.pop_back();
   const std::string url = server + "/api/cf/device/" + deviceId + "/ebooks/presence";
+  if (ESP.getFreeHeap() < HttpDownloader::MIN_TLS_FREE_HEAP ||
+      ESP.getMaxAllocHeap() < HttpDownloader::MIN_TLS_MAX_ALLOC) {
+    LOG_ERR("CF", "Low heap for ebook presence sync (%u free, %u max block)", ESP.getFreeHeap(),
+            ESP.getMaxAllocHeap());
+    return false;
+  }
   freeink::SecureHttpClient http;
   http.setTimeout(10000);
   http.setInsecure();
@@ -723,14 +916,28 @@ bool CrossFrontSyncFilesActivity::syncLocalPresence(const std::vector<EbookItem>
   for (const auto& header : makeHeaders(CROSSFRONT_SETTINGS.deviceToken)) {
     http.addHeader(header.first.c_str(), header.second.c_str());
   }
+  if (ESP.getFreeHeap() < HttpDownloader::MIN_TLS_FREE_HEAP ||
+      ESP.getMaxAllocHeap() < HttpDownloader::MIN_TLS_MAX_ALLOC) {
+    LOG_ERR("CF", "Low heap after preparing ebook presence sync (%u free, %u max block)", ESP.getFreeHeap(),
+            ESP.getMaxAllocHeap());
+    return false;
+  }
   const int httpCode = http.sendRequest(
-      "POST", reinterpret_cast<const uint8_t*>(payload.data()), payload.size(), nullptr);
+      "POST", reinterpret_cast<const uint8_t*>(payload.data()), payload.size(),
+      discardResponseBody, [this]() { return pollBackCancellation(); });
+  const bool requestAborted = http.aborted();
   http.end();
-  return httpCode == 200;
+  return !cancelRequested && !requestAborted && httpCode == 200;
 }
 
 bool CrossFrontSyncFilesActivity::markFileDone(const std::string& mediaId, const uint32_t revision,
                                                 const std::string& downloadId) {
+  if (ESP.getFreeHeap() < HttpDownloader::MIN_TLS_FREE_HEAP ||
+      ESP.getMaxAllocHeap() < HttpDownloader::MIN_TLS_MAX_ALLOC) {
+    LOG_ERR("CF", "Low heap for ebook status sync (%u free, %u max block)", ESP.getFreeHeap(),
+            ESP.getMaxAllocHeap());
+    return false;
+  }
   std::string server = CROSSFRONT_SETTINGS.getServerUrl();
   if (!server.empty() && server.back() == '/') server.pop_back();
   const std::string url = server + "/api/cf/device/" + deviceId + "/ebooks/" + mediaId + "/done";
@@ -745,9 +952,17 @@ bool CrossFrontSyncFilesActivity::markFileDone(const std::string& mediaId, const
   const std::string revisionValue = std::to_string(revision);
   http.addHeader("X-Media-Revision", revisionValue.c_str());
   http.addHeader("X-Download-Id", downloadId.c_str());
-  const int httpCode = http.sendRequest("POST", nullptr, 0, nullptr);
+  if (ESP.getFreeHeap() < HttpDownloader::MIN_TLS_FREE_HEAP ||
+      ESP.getMaxAllocHeap() < HttpDownloader::MIN_TLS_MAX_ALLOC) {
+    LOG_ERR("CF", "Low heap after preparing ebook status sync (%u free, %u max block)", ESP.getFreeHeap(),
+            ESP.getMaxAllocHeap());
+    return false;
+  }
+  const int httpCode = http.sendRequest("POST", nullptr, 0, discardResponseBody,
+                                       [this]() { return pollBackCancellation(); });
+  const bool requestAborted = http.aborted();
   http.end();
-  return httpCode == 200;
+  return !cancelRequested && !requestAborted && httpCode == 200;
 }
 
 void CrossFrontSyncFilesActivity::drawFooter() {
@@ -794,6 +1009,11 @@ void CrossFrontSyncFilesActivity::render(RenderLock&& lock) {
                               EpdFontFamily::BOLD);
     if (!errorMessage.empty()) renderer.drawCenteredText(UI_10_FONT_ID, centerY + lineHeight, errorMessage.c_str());
     const auto labels = mappedInput.mapLabels(tr(STR_BACK), tr(STR_RETRY), "", "");
+    GUI.drawButtonHints(renderer, labels.btn1, labels.btn2, labels.btn3, labels.btn4);
+  }
+  if (state == State::CONNECTING_WIFI || state == State::FETCHING_LIST ||
+      state == State::SYNCING_DOWNLOAD_STATUS) {
+    const auto labels = mappedInput.mapLabels(tr(STR_BACK), "", "", "");
     GUI.drawButtonHints(renderer, labels.btn1, labels.btn2, labels.btn3, labels.btn4);
   }
   renderer.displayBuffer();
